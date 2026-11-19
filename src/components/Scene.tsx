@@ -221,13 +221,18 @@ function RigAndWorld({
     const baseUp = isMobile ? 2.55 : 2.1;
     const baseRight = isMobile ? 0.35 : 0.62;
 
+    const rawChaseRight = baseRight + biasRight;
+    // Add subtle ~0.4 horizontal offset toward whichever side frames the dynamic rear three-quarter angle
+    const threeQuarterChaseOffset =
+      (isMobile ? 0.28 : 0.4) * Math.tanh(rawChaseRight * 2.2);
+
     const swayX = reducedMotion
       ? 0
       : Math.sin(clock.elapsedTime * 0.9) * 0.05 * (1 - overlookParkFactor);
 
     camOffsetGoal
       .set(0, baseUp + biasUp, 0)
-      .addScaledVector(frame.right, baseRight + biasRight + swayX)
+      .addScaledVector(frame.right, rawChaseRight + threeQuarterChaseOffset + swayX)
       .addScaledVector(frame.tangent, -(baseBack + biasBack));
 
     lookOffsetGoal
