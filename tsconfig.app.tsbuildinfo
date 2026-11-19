@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/components/hud.tsx","./src/components/motorcycle.tsx","./src/components/projectwaypoints.tsx","./src/components/roadandterrain.tsx","./src/components/scene.tsx","./src/data/waypoints.ts","./src/hooks/usereducedmotion.ts","./src/utils/roadspline.ts","./src/utils/textures.ts"],"version":"5.9.3"}
