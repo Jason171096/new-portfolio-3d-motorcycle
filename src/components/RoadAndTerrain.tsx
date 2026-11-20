@@ -497,11 +497,11 @@ interface ClutterPlacement {
  */
 function buildTerrainGeometry(trees: TreePlacement[]): THREE.BufferGeometry {
   const widthX = 360;
-  const minZ = -630;
+  const minZ = Math.floor(OVERLOOK_CENTER.z - 165);
   const maxZ = 65;
   const depthZ = maxZ - minZ;
   const segX = 180;
-  const segZ = 220;
+  const segZ = 290;
 
   const geo = new THREE.PlaneGeometry(widthX, depthZ, segX, segZ);
   geo.rotateX(-Math.PI / 2);
@@ -586,8 +586,9 @@ function buildTerrainGeometry(trees: TreePlacement[]): THREE.BufferGeometry {
     }
 
     // 4. Cool dusk tint on distant perimeter mountain flanks
-    if (dist > 75 || z < -515) {
-      const ridgeBlend = THREE.MathUtils.clamp(Math.max(dist - 75, -515 - z) / 65, 0, 0.75);
+    const duskZCutoff = OVERLOOK_CENTER.z - 40;
+    if (dist > 75 || z < duskZCutoff) {
+      const ridgeBlend = THREE.MathUtils.clamp(Math.max(dist - 75, duskZCutoff - z) / 65, 0, 0.75);
       tmpColor.lerp(duskRidge, ridgeBlend);
     }
 
@@ -611,8 +612,20 @@ function buildMountainRidgeGeometry(): THREE.BufferGeometry {
   const indices: number[] = [];
 
   const layers = [
-    { radius: 340, baseY: -12, peakAmp: 62, zCenter: -340, color: new THREE.Color('#3b3344') },
-    { radius: 440, baseY: -16, peakAmp: 95, zCenter: -390, color: new THREE.Color('#2c283b') },
+    {
+      radius: 460,
+      baseY: -10,
+      peakAmp: 66,
+      zCenter: OVERLOOK_CENTER.z + 230,
+      color: new THREE.Color('#3b3344'),
+    },
+    {
+      radius: 560,
+      baseY: -14,
+      peakAmp: 98,
+      zCenter: OVERLOOK_CENTER.z + 180,
+      color: new THREE.Color('#2c283b'),
+    },
   ];
 
   let vertexOffset = 0;
@@ -839,15 +852,50 @@ export function RoadAndTerrain() {
     return geo;
   }, []);
 
-  const guardrailSpans = useMemo(
-    () => [
-      { side: 1 as const, geo: buildGuardrailRibbon(1, ROAD_HALF_WIDTH + 0.85, 0.12, 0.28, 70), tStart: 0.12, tEnd: 0.28 },
-      { side: -1 as const, geo: buildGuardrailRibbon(-1, ROAD_HALF_WIDTH + 0.85, 0.25, 0.54, 95), tStart: 0.25, tEnd: 0.54 },
-      { side: 1 as const, geo: buildGuardrailRibbon(1, ROAD_HALF_WIDTH + 0.85, 0.44, 0.77, 105), tStart: 0.44, tEnd: 0.77 },
-      { side: -1 as const, geo: buildGuardrailRibbon(-1, ROAD_HALF_WIDTH + 0.85, 0.69, 0.91, 80), tStart: 0.69, tEnd: 0.91 },
-    ],
-    [],
-  );
+  const guardrailSpans = useMemo(() => {
+    const buildSideSpans = (side: -1 | 1, baseStart: number, baseEnd: number) => {
+      const sideLabel = side === 1 ? 'right' : 'left';
+      const gaps = PROJECT_WAYPOINTS
+        .filter((wp) => wp.side === sideLabel)
+        .map((wp) => [wp.anchorT - 0.052, wp.anchorT + 0.038] as [number, number])
+        .sort((a, b) => a[0] - b[0]);
+
+      const spans: {
+        side: -1 | 1;
+        geo: THREE.BufferGeometry;
+        tStart: number;
+        tEnd: number;
+      }[] = [];
+
+      let cursor = baseStart;
+      for (const [gapStart, gapEnd] of gaps) {
+        if (gapStart > cursor + 0.03) {
+          const tEnd = Math.min(gapStart, baseEnd);
+          const segments = Math.max(24, Math.round((tEnd - cursor) * 420));
+          spans.push({
+            side,
+            geo: buildGuardrailRibbon(side, ROAD_HALF_WIDTH + 0.85, cursor, tEnd, segments),
+            tStart: cursor,
+            tEnd,
+          });
+        }
+        cursor = Math.max(cursor, gapEnd);
+      }
+
+      if (baseEnd > cursor + 0.03) {
+        const segments = Math.max(24, Math.round((baseEnd - cursor) * 420));
+        spans.push({
+          side,
+          geo: buildGuardrailRibbon(side, ROAD_HALF_WIDTH + 0.85, cursor, baseEnd, segments),
+          tStart: cursor,
+          tEnd: baseEnd,
+        });
+      }
+      return spans;
+    };
+
+    return [...buildSideSpans(1, 0.08, 0.91), ...buildSideSpans(-1, 0.16, 0.91)];
+  }, []);
 
   const dashCount = Math.floor(ROAD_TOTAL_LENGTH / 7.2);
   const dashRef = useRef<THREE.InstancedMesh>(null);
@@ -929,7 +977,7 @@ export function RoadAndTerrain() {
     const grassList: ClutterPlacement[] = [];
 
     let attempts = 0;
-    while (pineList.length < 320 && attempts < 2600) {
+    while (pineList.length < 430 && attempts < 3600) {
       attempts++;
       const t = rand() * 0.95;
       const { point, right } = getRoadFrameAt(t);
@@ -957,7 +1005,7 @@ export function RoadAndTerrain() {
     }
 
     attempts = 0;
-    while (oakList.length < 155 && attempts < 1800) {
+    while (oakList.length < 210 && attempts < 2400) {
       attempts++;
       const t = rand() * 0.92;
       const { point, right } = getRoadFrameAt(t);
@@ -1038,7 +1086,7 @@ export function RoadAndTerrain() {
     }
 
     attempts = 0;
-    while (boulderList.length < 140 && attempts < 1400) {
+    while (boulderList.length < 190 && attempts < 1900) {
       attempts++;
       const t = 0.04 + rand() * 0.94;
       const { point, right } = getRoadFrameAt(t);
@@ -1058,7 +1106,7 @@ export function RoadAndTerrain() {
     }
 
     attempts = 0;
-    while (grassList.length < 420 && attempts < 2200) {
+    while (grassList.length < 560 && attempts < 3000) {
       attempts++;
       const t = 0.02 + rand() * 0.93;
       const { point, right } = getRoadFrameAt(t);
@@ -1440,8 +1488,8 @@ export function RoadAndTerrain() {
   return (
     <group name="countryside-environment">
       {/* Golden-hour atmospheric sky dome */}
-      <mesh position={[0, 0, -240]} frustumCulled={false}>
-        <sphereGeometry args={[920, 48, 32]} />
+      <mesh position={[0, 0, OVERLOOK_CENTER.z * 0.5]} frustumCulled={false}>
+        <sphereGeometry args={[1150, 48, 32]} />
         <shaderMaterial
           vertexShader={SKY_VERTEX_SHADER}
           fragmentShader={SKY_FRAGMENT_SHADER}

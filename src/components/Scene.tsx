@@ -1,7 +1,11 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { PORTFOLIO_WAYPOINTS, type WaypointConfig } from '../data/waypoints';
+import {
+  PORTFOLIO_WAYPOINTS,
+  TOTAL_ROUTE_MILES,
+  type WaypointConfig,
+} from '../data/waypoints';
 import {
   ROAD_TOTAL_LENGTH,
   SUN_DIRECTION,
@@ -36,13 +40,15 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
 
 /**
  * Computes smooth 0..1 blend weights for each waypoint camera bias around its active window.
+ * Lead fade begins slightly before `range[0]` so the camera smoothly biases toward upcoming billboards.
  */
 function getWaypointWeight(progress: number, wp: WaypointConfig): number {
   const [start, end] = wp.range;
-  const fade = wp.kind === 'overlook' ? 0.05 : 0.045;
-  if (progress < start - fade || progress > end + fade) return 0;
-  if (progress < start) return smoothstep(start - fade, start, progress);
-  if (progress > end) return 1 - smoothstep(end, end + fade, progress);
+  const leadFade = wp.kind === 'overlook' ? 0.035 : 0.022;
+  const trailFade = wp.kind === 'overlook' ? 0.02 : 0.014;
+  if (progress < start - leadFade || progress > end + trailFade) return 0;
+  if (progress < start) return smoothstep(start - leadFade, start, progress);
+  if (progress > end) return 1 - smoothstep(end, end + trailFade, progress);
   return 1;
 }
 
@@ -182,7 +188,7 @@ function RigAndWorld({
     const isMobile = size.width < 768 || aspect < 1.0;
 
     if (camera instanceof THREE.PerspectiveCamera) {
-      const targetFov = isMobile ? 54 : 45;
+      const targetFov = isMobile ? 56 : 45;
       if (Math.abs(camera.fov - targetFov) > 0.1) {
         camera.fov = THREE.MathUtils.damp(camera.fov, targetFov, 5, dt);
         camera.updateProjectionMatrix();
@@ -203,7 +209,13 @@ function RigAndWorld({
       const w = getWaypointWeight(p, wp);
       if (w > 0.001) {
         const lateralScale = isMobile ? 0.52 : 1.0;
-        biasRight += wp.cameraBias.offset[0] * w * lateralScale;
+        // Subtly bias chase camera lateral offset toward the active billboard side when approaching a milestone
+        const billboardApproachBias =
+          wp.kind === 'project' && wp.side
+            ? (wp.side === 'right' ? 0.16 : -0.22) * w * lateralScale
+            : 0;
+
+        biasRight += wp.cameraBias.offset[0] * w * lateralScale + billboardApproachBias;
         biasUp += wp.cameraBias.offset[1] * w;
         biasBack += wp.cameraBias.offset[2] * w;
 
@@ -277,7 +289,7 @@ function RigAndWorld({
 
       onTelemetryUpdate({
         progress: p,
-        miles: Number((p * 3.5).toFixed(2)),
+        miles: Number((p * TOTAL_ROUTE_MILES).toFixed(2)),
         speedMph: cruisingMph,
         activeWaypoint,
       });
@@ -331,7 +343,7 @@ export function Scene(props: SceneProps) {
       <Canvas
         shadows
         dpr={[1, 2]}
-        camera={{ fov: 45, near: 0.15, far: 1200 }}
+        camera={{ fov: 45, near: 0.15, far: 1600 }}
         gl={{
           antialias: true,
           powerPreference: 'high-performance',

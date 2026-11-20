@@ -13,20 +13,22 @@ export const ROAD_HALF_WIDTH = ROAD_WIDTH * 0.5;
 export const SHOULDER_WIDTH = 2.0;
 
 /**
- * Control points defining a winding golden-hour countryside highway
- * climbing gradually toward a scenic mountain overlook at the sunset horizon.
+ * Control points defining an extended winding golden-hour countryside highway (~35% longer)
+ * climbing gradually across 5 alternating project milestones toward a scenic mountain overlook.
  */
 const CONTROL_POINTS: [number, number, number][] = [
-  [0, 0.0, 26],      // Approach behind Start Line
-  [0, 0.25, -24],    // Start Line straightaway (0% - 15%)
-  [13, 1.4, -84],    // Sweeping right entry
-  [-9, 2.9, -148],   // Gentle left bend past Mile 1 (PrimeFitness on right)
-  [-32, 4.4, -214],  // Valley crest
-  [-12, 6.2, -278],  // Sweeping right ridge past Mile 2 (Azzule AI on left)
-  [20, 7.8, -342],   // Foothill curve
-  [4, 9.0, -404],    // Sunset turn past Mile 3 (Pulsar 3D on right)
-  [-15, 10.0, -452], // Level overlook entry
-  [-18, 10.0, -492], // Destination Overlook pull-off facing sunset vista
+  [0, 0.0, 26],       // Approach behind Start Line
+  [0, 0.25, -26],     // Start Line straightaway (0% - 10%)
+  [13, 1.4, -90],     // Gentle right entry
+  [-4, 3.0, -162],    // Gentle left curve past Mile 1 (PrimeFitness on right)
+  [-28, 4.7, -234],   // Valley bend
+  [-10, 6.4, -300],   // Gentle right curve past Mile 2 (Azzule AI on left)
+  [18, 8.0, -366],    // Ridge sweep
+  [4, 9.5, -434],     // Gentle left turn past Mile 3 (VW Credit on right)
+  [-22, 10.9, -502],  // Mid-highland curve past Mile 4 (OhhFiles on left)
+  [8, 12.1, -568],    // Foothill curve past Mile 5 (MediGer on right)
+  [-8, 13.2, -628],   // Level overlook entry
+  [-17, 13.2, -677],  // Destination Overlook pull-off facing sunset vista
 ];
 
 export const roadCurve = new THREE.CatmullRomCurve3(
@@ -38,7 +40,7 @@ export const roadCurve = new THREE.CatmullRomCurve3(
 
 export const ROAD_TOTAL_LENGTH = roadCurve.getLength();
 
-const LUT_COUNT = 500;
+const LUT_COUNT = 700;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
 export const ROAD_SAMPLES: SplineSample[] = Array.from({ length: LUT_COUNT + 1 }, (_, i) => {

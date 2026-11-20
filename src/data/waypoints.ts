@@ -18,6 +18,8 @@ export interface WaypointConfig {
   kind: WaypointKind;
   mileNumber: string;
   navLabel: string;
+  /** Compact badge label for viewports narrower than 768px (e.g. M1–M5) */
+  shortLabel: string;
   /** Scroll range [start, end] in normalized 0..1 progress where this milestone is active */
   range: [number, number];
   /** Ideal spline t (0..1) to jump to when selecting this waypoint from the HUD */
@@ -62,9 +64,9 @@ export const CONTACT_INFO: ContactDestination = {
 };
 
 /**
- * Central waypoint registry.
- * To add a future portfolio project, append a new 'project' entry with a non-overlapping
- * scroll range and spline `anchorT`, then drop its WebP screenshot into `public/assets/projects/`.
+ * Single typed source of truth for all highway waypoints (Start Line, Miles 1–5, Destination Overlook).
+ * Scene camera framing, 3D roadside billboards, guardrail cutouts, HUD route pills,
+ * and odometer telemetry all derive dynamically from this array.
  */
 export const PORTFOLIO_WAYPOINTS: WaypointConfig[] = [
   {
@@ -72,7 +74,8 @@ export const PORTFOLIO_WAYPOINTS: WaypointConfig[] = [
     kind: 'intro',
     mileNumber: 'MILE 00',
     navLabel: 'Start',
-    range: [0.0, 0.15],
+    shortLabel: '00',
+    range: [0.0, 0.1],
     jumpProgress: 0.0,
     cameraBias: {
       offset: [-1.25, 0.18, 0.35],
@@ -81,12 +84,12 @@ export const PORTFOLIO_WAYPOINTS: WaypointConfig[] = [
     title: 'Jason Martinez',
     subtitle: 'Backend, Cloud & AI Systems Engineer',
     summary:
-      'Architecting resilient distributed APIs, cloud-native data pipelines, and applied AI workflows with C#, SQL, Java, and modern infrastructure.',
-    techStack: ['C# / .NET', 'SQL / PostgreSQL', 'Java', 'Google Cloud', 'AI Integrations'],
+      'Architecting resilient distributed APIs, cloud-native data pipelines, and applied AI workflows with C#, SQL, .NET, React, and modern cloud infrastructure.',
+    techStack: ['C# / .NET', 'SQL / PostgreSQL', 'Azure & GCP', 'React', 'AI Integrations'],
     highlights: [
       'High-throughput backend APIs & multi-tenant cloud services',
       'Automated compliance & LLM document ingestion pipelines',
-      'End-to-end systems from PostgreSQL schemas to 3D interfaces',
+      'End-to-end systems from SQL schemas to responsive web portals',
     ],
     accentColor: '#ffbe6b',
   },
@@ -95,30 +98,24 @@ export const PORTFOLIO_WAYPOINTS: WaypointConfig[] = [
     kind: 'project',
     mileNumber: 'MILE 01',
     navLabel: 'PrimeFitness',
-    range: [0.2, 0.45],
-    jumpProgress: 0.31,
-    anchorT: 0.345,
+    shortLabel: 'M1',
+    range: [0.12, 0.26],
+    jumpProgress: 0.2,
+    anchorT: 0.254,
     side: 'right',
     lateralOffset: 9.2,
     cameraBias: {
-      offset: [-1.1, 0.35, 0.4],
-      lookOffset: [2.3, 0.95, 5.2],
+      offset: [0.22, 0.35, 0.45],
+      lookOffset: [1.4, 0.95, 5.2],
     },
     title: 'PrimeFitness POS & Gym Management',
-    subtitle: 'Full-Stack SaaS Dashboard & Desktop Point-of-Sale',
+    subtitle: 'Web Dashboard & Desktop Point-of-Sale Interface',
     role: 'Lead Systems & Full-Stack Architect',
     summary:
       'Full-stack gym management and point-of-sale platform built with ASP.NET Core Minimal APIs, Google Cloud Run, Neon PostgreSQL, Stripe integration, and Electron.',
-    techStack: [
-      'C# / ASP.NET Core',
-      'Minimal APIs',
-      'Google Cloud Run',
-      'Neon PostgreSQL',
-      'Stripe',
-      'Electron',
-    ],
+    techStack: ['ASP.NET Core', 'Cloud Run', 'PostgreSQL', 'Stripe', 'Electron'],
     highlights: [
-      'Sub-50ms check-in & barcode POS register running offline-first via Electron',
+      'Sub-50ms member check-in & barcode POS register running offline-first via Electron',
       'Serverless container scaling on Google Cloud Run backed by pooled Neon PostgreSQL',
       'Automated recurring membership billing, webhooks, and terminal reconciliation with Stripe',
     ],
@@ -134,21 +131,22 @@ export const PORTFOLIO_WAYPOINTS: WaypointConfig[] = [
     kind: 'project',
     mileNumber: 'MILE 02',
     navLabel: 'Azzule AI',
-    range: [0.5, 0.7],
-    jumpProgress: 0.59,
-    anchorT: 0.625,
+    shortLabel: 'M2',
+    range: [0.28, 0.42],
+    jumpProgress: 0.36,
+    anchorT: 0.405,
     side: 'left',
     lateralOffset: 9.2,
     cameraBias: {
-      offset: [1.1, 0.35, 0.4],
-      lookOffset: [-2.3, 0.95, 5.2],
+      offset: [-1.1, 0.35, 0.45],
+      lookOffset: [-1.4, 0.95, 5.2],
     },
-    title: 'Azzule Systems — AI Regulatory Document Pipeline',
-    subtitle: 'Enterprise Supply-Chain & Food-Safety Intelligence',
+    title: 'Azzule Systems — AI-Powered Compliance Automation',
+    subtitle: 'Enterprise Supply-Chain Compliance & Document Processing',
     role: 'Backend & AI Integration Engineer',
     summary:
       'Automated regulatory document ingestion and food-safety compliance workflows built with C#, SQL, and AI integrations.',
-    techStack: ['C#', 'SQL Server', 'AI / LLM Pipelines', 'Document Extraction', 'Cloud Workflows'],
+    techStack: ['C#', 'SQL', 'AI Integrations', 'Enterprise Compliance'],
     highlights: [
       'Structured extraction of multi-format audit certificates and lab test PDFs',
       'Deterministic SQL compliance validation rules paired with AI confidence scoring',
@@ -161,35 +159,99 @@ export const PORTFOLIO_WAYPOINTS: WaypointConfig[] = [
     ],
   },
   {
-    id: 'pulsar-3d',
+    id: 'vw-credit',
     kind: 'project',
     mileNumber: 'MILE 03',
-    navLabel: 'Pulsar 3D',
-    range: [0.75, 0.9],
-    jumpProgress: 0.815,
-    anchorT: 0.845,
+    navLabel: 'VW Credit',
+    shortLabel: 'M3',
+    range: [0.44, 0.58],
+    jumpProgress: 0.52,
+    anchorT: 0.556,
     side: 'right',
     lateralOffset: 9.2,
     cameraBias: {
-      offset: [-1.05, 0.35, 0.4],
-      lookOffset: [2.2, 0.95, 5.0],
+      offset: [0.22, 0.35, 0.45],
+      lookOffset: [1.4, 0.95, 5.2],
     },
-    title: 'Bajaj Pulsar N250 3D WebGL Visualizer',
-    subtitle: 'Interactive Component-Inspection Showcase',
-    role: 'Creative WebGL & Frontend Engineer',
+    title: 'Volkswagen México — Credit Risk Automation Engine',
+    subtitle: 'Auto-Credit Evaluation & Credit Bureau API Workflow',
+    role: 'Backend FinTech & Cloud Engineer',
     summary:
-      'Interactive 3D WebGL scrollytelling visualizer built with React, Three.js, GSAP ScrollTrigger, and Lenis.',
-    techStack: ['React', 'TypeScript', 'Three.js', 'GSAP ScrollTrigger', 'Lenis'],
+      'Engineered secure Credit Bureau integration APIs using ASP.NET and Azure, automating auto-credit evaluation workflows.',
+    techStack: ['ASP.NET', 'Azure', 'Credit Bureau APIs', 'FinTech'],
     highlights: [
-      'Smooth scroll-synchronized camera choreography and exploded mechanical views',
-      'Physically based metallic shaders with golden-hour studio environment reflections',
-      'Zero-jank 60fps rendering budget with instanced geometry and damped kinematics',
+      'Encrypted ASP.NET middleware orchestrating real-time Credit Bureau risk pulls',
+      'Automated underwriting decision rules cutting dealer credit approval latency',
+      'Fault-tolerant Azure cloud deployment with strict audit logging and SLA monitoring',
     ],
-    imagePath: '/assets/projects/pulsar-3d.webp',
+    imagePath: '/assets/projects/vw-credit.webp',
+    accentColor: '#60a5fa',
+    links: [
+      { label: 'Architecture Notes', url: 'https://jasonmartinez.dev/#vw-credit', external: true },
+    ],
+  },
+  {
+    id: 'ohhfiles',
+    kind: 'project',
+    mileNumber: 'MILE 04',
+    navLabel: 'OhhFiles',
+    shortLabel: 'M4',
+    range: [0.6, 0.74],
+    jumpProgress: 0.68,
+    anchorT: 0.708,
+    side: 'left',
+    lateralOffset: 9.2,
+    cameraBias: {
+      offset: [-1.1, 0.35, 0.45],
+      lookOffset: [-1.4, 0.95, 5.2],
+    },
+    title: 'OhhFiles — Medical Health-Tracking Platform',
+    subtitle: 'Patient Tracking, Secure Uploads & Health Visualizations',
+    role: 'Full-Stack HealthTech Engineer',
+    summary:
+      'Built a patient tracking web app in React, featuring secure file uploads and dynamic data visualizations.',
+    techStack: ['React', 'Data Visualization', 'Secure Uploads', 'HealthTech'],
+    highlights: [
+      'Interactive longitudinal health charts surfacing patient vitals and lab trends',
+      'Pre-signed encrypted document upload pipeline for imaging and clinical records',
+      'Responsive React workspace designed for fast clinician and patient review',
+    ],
+    imagePath: '/assets/projects/ohhfiles.webp',
+    accentColor: '#a78bfa',
+    links: [
+      { label: 'Platform Overview', url: 'https://jasonmartinez.dev/#ohhfiles', external: true },
+    ],
+  },
+  {
+    id: 'mediger',
+    kind: 'project',
+    mileNumber: 'MILE 05',
+    navLabel: 'MediGer',
+    shortLabel: 'M5',
+    range: [0.76, 0.9],
+    jumpProgress: 0.84,
+    anchorT: 0.86,
+    side: 'right',
+    lateralOffset: 9.2,
+    cameraBias: {
+      offset: [0.22, 0.35, 0.45],
+      lookOffset: [1.4, 0.95, 5.2],
+    },
+    title: 'MediGer — Eldercare Scheduling & Records Portal',
+    subtitle: 'Medical Records & Caregiver Scheduling Interface',
+    role: 'Full-Stack .NET & React Engineer',
+    summary:
+      'Developed a medical records and scheduling portal using React and .NET to optimize patient care tracking.',
+    techStack: ['React', '.NET', 'Medical Records', 'Scheduling'],
+    highlights: [
+      'Shift coordination calendar syncing caregiver assignments and medication rounds',
+      'Strongly typed .NET REST endpoints managing resident charts and care histories',
+      'Role-scoped clinical views streamlining daily handoffs across care teams',
+    ],
+    imagePath: '/assets/projects/mediger.webp',
     accentColor: '#fb923c',
     links: [
-      { label: 'Live Experience', url: 'https://jasonmartinez.dev/#pulsar-3d', external: true },
-      { label: 'Source Repo', url: 'https://github.com/jasonmartinez', external: true },
+      { label: 'System Overview', url: 'https://jasonmartinez.dev/#mediger', external: true },
     ],
   },
   {
@@ -197,6 +259,7 @@ export const PORTFOLIO_WAYPOINTS: WaypointConfig[] = [
     kind: 'overlook',
     mileNumber: 'OVERLOOK',
     navLabel: 'Contact',
+    shortLabel: 'END',
     range: [0.92, 1.0],
     jumpProgress: 0.995,
     cameraBias: {
@@ -206,8 +269,8 @@ export const PORTFOLIO_WAYPOINTS: WaypointConfig[] = [
     title: 'Destination Overlook',
     subtitle: 'Let’s Build Resilient Systems Together',
     summary:
-      'Reached the summit pull-off. Reach out directly to collaborate on backend architecture, cloud migrations, or applied AI engineering.',
-    techStack: ['jasonmartinez.dev', 'C# / .NET', 'Java', 'SQL', 'Cloud & AI'],
+      'Reached the summit pull-off. Reach out directly to collaborate on backend architecture, cloud infrastructure, or applied AI engineering.',
+    techStack: ['jasonmartinez.dev', 'C# / .NET', 'SQL', 'Cloud & AI', 'React'],
     highlights: [
       'Direct engineering collaboration — backend, cloud infrastructure, and AI workflows',
       'Available for full-time senior roles and select technical advisory engagements',
@@ -220,3 +283,6 @@ export const PROJECT_WAYPOINTS = PORTFOLIO_WAYPOINTS.filter(
   (w): w is WaypointConfig & { kind: 'project'; anchorT: number; imagePath: string } =>
     w.kind === 'project' && typeof w.anchorT === 'number' && typeof w.imagePath === 'string',
 );
+
+/** Total route distance in thematic miles, dynamically synced with the project milestones + summit pull-off */
+export const TOTAL_ROUTE_MILES = Number((PROJECT_WAYPOINTS.length + 0.5).toFixed(2));

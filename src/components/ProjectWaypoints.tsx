@@ -24,6 +24,7 @@ function useProjectTexture(waypoint: WaypointConfig): THREE.Texture {
     if (!waypoint.imagePath) return;
 
     let cancelled = false;
+    let loadedRef: THREE.Texture | null = null;
     const loader = new THREE.TextureLoader();
 
     loader.load(
@@ -36,6 +37,7 @@ function useProjectTexture(waypoint: WaypointConfig): THREE.Texture {
         loaded.colorSpace = THREE.SRGBColorSpace;
         loaded.anisotropy = 8;
         loaded.needsUpdate = true;
+        loadedRef = loaded;
         setTexture(loaded);
       },
       undefined,
@@ -46,6 +48,7 @@ function useProjectTexture(waypoint: WaypointConfig): THREE.Texture {
 
     return () => {
       cancelled = true;
+      loadedRef?.dispose();
     };
   }, [fallbackTexture, waypoint.imagePath]);
 
@@ -77,14 +80,14 @@ function RoadsideBillboard({
   const placement = useMemo(() => {
     const anchorFrame = getRoadFrameAt(waypoint.anchorT);
     const sideSign = waypoint.side === 'left' ? -1 : 1;
-    const lateral = (waypoint.lateralOffset ?? 9.8) * sideSign;
+    const lateral = (waypoint.lateralOffset ?? 9.2) * sideSign;
 
     const bx = anchorFrame.point.x + anchorFrame.right.x * lateral;
     const bz = anchorFrame.point.z + anchorFrame.right.z * lateral;
     const by = getTerrainHeight(bx, bz);
 
     // Orient display face (+Z) cleanly toward the approaching rider & chase camera
-    const approachT = Math.max(0.02, waypoint.anchorT - 0.068);
+    const approachT = Math.max(0.02, waypoint.anchorT - 0.04);
     const approachFrame = getRoadFrameAt(approachT);
     const dirToApproach = new THREE.Vector3(
       approachFrame.point.x - bx,
@@ -104,7 +107,7 @@ function RoadsideBillboard({
   useFrame(({ clock }, delta) => {
     const p = progressRef.current;
     const [start, end] = waypoint.range;
-    const pad = 0.045;
+    const pad = 0.03;
 
     let targetActive = 0;
     if (p >= start - pad && p <= end + pad) {
@@ -246,15 +249,17 @@ function RoadsideBillboard({
         </mesh>
 
         {/* Floating architectural title bar above screen */}
-        <group position={[0, screenH * 0.5 + 0.68, 0.04]}>
+        <group position={[0, screenH * 0.5 + 0.72, 0.04]}>
           <mesh>
-            <boxGeometry args={[6.4, 0.58, 0.08]} />
+            <boxGeometry args={[7.6, 0.72, 0.08]} />
             <meshStandardMaterial color="#0f1219" metalness={0.65} roughness={0.32} />
           </mesh>
           <Text
             position={[0, 0.01, 0.055]}
-            fontSize={0.26}
-            maxWidth={5.9}
+            fontSize={0.21}
+            maxWidth={7.1}
+            textAlign="center"
+            lineHeight={1.15}
             color="#f8fafc"
             anchorX="center"
             anchorY="middle"

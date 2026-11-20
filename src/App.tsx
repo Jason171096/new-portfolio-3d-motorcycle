@@ -141,7 +141,7 @@ export function App() {
       {/* Scrollable Scrollytelling Track mapped 0% -> 100% via GSAP ScrollTrigger */}
       <div
         ref={scrollContainerRef}
-        className="pointer-events-none relative z-10 h-[900vh] w-full"
+        className="pointer-events-none relative z-10 h-[1200vh] w-full"
         aria-label="Scrollable portfolio route"
       >
         {PORTFOLIO_WAYPOINTS.map((wp) => (
