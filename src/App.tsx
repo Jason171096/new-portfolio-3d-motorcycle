@@ -31,11 +31,11 @@ export function App() {
 
     if (!reducedMotion) {
       lenis = new Lenis({
-        duration: 1.25,
+        duration: 0.78,
         easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
         smoothWheel: true,
-        wheelMultiplier: 0.95,
-        touchMultiplier: 1.4,
+        wheelMultiplier: 1.35,
+        touchMultiplier: 1.6,
       });
 
       lenisRef.current = lenis;
@@ -105,7 +105,7 @@ export function App() {
 
       if (lenisRef.current && !reducedMotion) {
         lenisRef.current.scrollTo(targetY, {
-          duration: 1.8,
+          duration: 1.35,
           easing: (t) => 1 - Math.pow(1 - t, 3),
         });
       } else {
@@ -141,7 +141,7 @@ export function App() {
       {/* Scrollable Scrollytelling Track mapped 0% -> 100% via GSAP ScrollTrigger */}
       <div
         ref={scrollContainerRef}
-        className="pointer-events-none relative z-10 h-[1200vh] w-full"
+        className="pointer-events-none relative z-10 h-[900vh] w-full"
         aria-label="Scrollable portfolio route"
       >
         {PORTFOLIO_WAYPOINTS.map((wp) => (

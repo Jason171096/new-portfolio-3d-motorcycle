@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { PROJECT_WAYPOINTS } from '../data/waypoints';
@@ -500,8 +500,8 @@ function buildTerrainGeometry(trees: TreePlacement[]): THREE.BufferGeometry {
   const minZ = Math.floor(OVERLOOK_CENTER.z - 165);
   const maxZ = 65;
   const depthZ = maxZ - minZ;
-  const segX = 180;
-  const segZ = 290;
+  const segX = 136;
+  const segZ = 216;
 
   const geo = new THREE.PlaneGeometry(widthX, depthZ, segX, segZ);
   geo.rotateX(-Math.PI / 2);
@@ -538,10 +538,11 @@ function buildTerrainGeometry(trees: TreePlacement[]): THREE.BufferGeometry {
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i);
     const z = pos.getZ(i);
-    const y = getTerrainHeight(x, z);
+    const nearest = findNearestRoadSample(x, z);
+    const y = getTerrainHeight(x, z, nearest);
     pos.setY(i, y);
 
-    const { sample, distSq } = findNearestRoadSample(x, z);
+    const { sample, distSq } = nearest;
     const dist = Math.sqrt(distSq);
     const roadEdgeDist = Math.max(0, dist - ROAD_HALF_WIDTH);
     const relElev = y - sample.point.y;
@@ -697,7 +698,385 @@ function sampleFoliageShade(
   return out;
 }
 
-export function RoadAndTerrain() {
+function finalizeInstancedMesh(
+  mesh: THREE.InstancedMesh | null,
+  hasColor = false,
+  padRadius = 1.2,
+) {
+  if (!mesh) return;
+  mesh.instanceMatrix.needsUpdate = true;
+  if (hasColor && mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  mesh.computeBoundingSphere();
+  if (mesh.boundingSphere) {
+    mesh.boundingSphere.radius += padRadius;
+  }
+}
+
+interface FoliageChunkData {
+  pines: TreePlacement[];
+  oaks: TreePlacement[];
+  allTrees: TreePlacement[];
+  rootGrass: ClutterPlacement[];
+  rootBushes: ClutterPlacement[];
+  rootRocks: ClutterPlacement[];
+  boulders: ClutterPlacement[];
+  grassTufts: ClutterPlacement[];
+}
+
+interface FoliageChunkSharedAssets {
+  contactShadowGeo: THREE.BufferGeometry;
+  contactShadowMat: THREE.Material;
+  pineTrunkGeo: THREE.BufferGeometry;
+  pineTrunkMat: THREE.Material;
+  pineLowGeo: THREE.BufferGeometry;
+  pineMidGeo: THREE.BufferGeometry;
+  pineTopGeo: THREE.BufferGeometry;
+  pineFoliageMat: THREE.Material;
+  oakTrunkGeo: THREE.BufferGeometry;
+  oakTrunkMat: THREE.Material;
+  oakCanopyMainGeo: THREE.BufferGeometry;
+  oakCanopySubGeo: THREE.BufferGeometry;
+  oakFoliageMat: THREE.Material;
+  crossedGrassGeo: THREE.BufferGeometry;
+  grassMat: THREE.Material;
+  rootBushGeo: THREE.BufferGeometry;
+  bushMat: THREE.Material;
+  rootRockGeo: THREE.BufferGeometry;
+  rootRockMat: THREE.Material;
+  boulderGeo: THREE.BufferGeometry;
+  boulderMat: THREE.Material;
+}
+
+const FoliageChunk = React.memo(function FoliageChunk({
+  data,
+  assets,
+}: {
+  data: FoliageChunkData;
+  assets: FoliageChunkSharedAssets;
+}) {
+  const pineTrunkRef = useRef<THREE.InstancedMesh>(null);
+  const pineLowRef = useRef<THREE.InstancedMesh>(null);
+  const pineMidRef = useRef<THREE.InstancedMesh>(null);
+  const pineTopRef = useRef<THREE.InstancedMesh>(null);
+
+  const oakTrunkRef = useRef<THREE.InstancedMesh>(null);
+  const oakCanopyMainRef = useRef<THREE.InstancedMesh>(null);
+  const oakCanopySubRef = useRef<THREE.InstancedMesh>(null);
+
+  const contactShadowRef = useRef<THREE.InstancedMesh>(null);
+  const rootGrassRef = useRef<THREE.InstancedMesh>(null);
+  const rootBushRef = useRef<THREE.InstancedMesh>(null);
+  const rootRockRef = useRef<THREE.InstancedMesh>(null);
+
+  const boulderRef = useRef<THREE.InstancedMesh>(null);
+  const grassRef = useRef<THREE.InstancedMesh>(null);
+
+  useEffect(() => {
+    const dummy = new THREE.Object3D();
+    const c = new THREE.Color();
+    const upAxis = new THREE.Vector3(0, 1, 0);
+    const terrainNormal = new THREE.Vector3();
+    const slopeQuat = new THREE.Quaternion();
+    const yawQuat = new THREE.Quaternion();
+
+    if (pineTrunkRef.current && pineLowRef.current && pineMidRef.current && pineTopRef.current) {
+      data.pines.forEach((tree, i) => {
+        const sxz = tree.scaleXZ;
+        const sy = tree.scaleY;
+        dummy.rotation.set(tree.tiltX, tree.rotY, tree.tiltZ);
+
+        dummy.position.set(tree.x, tree.y + 1.4 * sy, tree.z);
+        dummy.scale.set(sxz, sy, sxz);
+        dummy.updateMatrix();
+        pineTrunkRef.current!.setMatrixAt(i, dummy.matrix);
+
+        dummy.position.set(tree.x, tree.y + 3.4 * sy, tree.z);
+        dummy.updateMatrix();
+        pineLowRef.current!.setMatrixAt(i, dummy.matrix);
+
+        dummy.rotation.set(tree.tiltX, tree.rotY + 0.55, tree.tiltZ);
+        dummy.position.set(tree.x, tree.y + 5.1 * sy, tree.z);
+        dummy.updateMatrix();
+        pineMidRef.current!.setMatrixAt(i, dummy.matrix);
+
+        dummy.rotation.set(tree.tiltX, tree.rotY + 1.1, tree.tiltZ);
+        dummy.position.set(tree.x, tree.y + 6.6 * sy, tree.z);
+        dummy.updateMatrix();
+        pineTopRef.current!.setMatrixAt(i, dummy.matrix);
+
+        sampleFoliageShade(c, tree.tone, tree.amberWeight, false);
+        pineLowRef.current!.setColorAt(i, c);
+        pineMidRef.current!.setColorAt(i, c.clone().offsetHSL(0.008, 0.03, 0.035));
+        pineTopRef.current!.setColorAt(i, c.clone().offsetHSL(0.015, 0.04, 0.065));
+      });
+      finalizeInstancedMesh(pineTrunkRef.current, false, 1.5);
+      finalizeInstancedMesh(pineLowRef.current, true, 2.2);
+      finalizeInstancedMesh(pineMidRef.current, true, 2.0);
+      finalizeInstancedMesh(pineTopRef.current, true, 1.8);
+    }
+
+    if (oakTrunkRef.current && oakCanopyMainRef.current && oakCanopySubRef.current) {
+      data.oaks.forEach((tree, i) => {
+        const sxz = tree.scaleXZ;
+        const sy = tree.scaleY;
+        dummy.rotation.set(tree.tiltX, tree.rotY, tree.tiltZ);
+
+        dummy.position.set(tree.x, tree.y + 1.25 * sy, tree.z);
+        dummy.scale.set(sxz, sy, sxz);
+        dummy.updateMatrix();
+        oakTrunkRef.current!.setMatrixAt(i, dummy.matrix);
+
+        dummy.position.set(tree.x, tree.y + 3.65 * sy, tree.z);
+        dummy.scale.set(sxz * 1.12, sy * 0.96, sxz * 1.06);
+        dummy.updateMatrix();
+        oakCanopyMainRef.current!.setMatrixAt(i, dummy.matrix);
+
+        dummy.rotation.set(tree.tiltX, tree.rotY + 1.35, tree.tiltZ);
+        dummy.position.set(
+          tree.x + Math.cos(tree.rotY) * 1.05 * sxz,
+          tree.y + 3.2 * sy,
+          tree.z + Math.sin(tree.rotY) * 1.05 * sxz,
+        );
+        dummy.scale.set(sxz * 0.82, sy * 0.76, sxz * 0.8);
+        dummy.updateMatrix();
+        oakCanopySubRef.current!.setMatrixAt(i, dummy.matrix);
+
+        sampleFoliageShade(c, tree.tone, tree.amberWeight, true);
+        oakCanopyMainRef.current!.setColorAt(i, c);
+        oakCanopySubRef.current!.setColorAt(i, c.clone().offsetHSL(-0.015, 0.04, 0.04));
+      });
+      finalizeInstancedMesh(oakTrunkRef.current, false, 1.5);
+      finalizeInstancedMesh(oakCanopyMainRef.current, true, 2.4);
+      finalizeInstancedMesh(oakCanopySubRef.current, true, 2.0);
+    }
+
+    if (contactShadowRef.current) {
+      data.allTrees.forEach((tree, i) => {
+        getTerrainNormal(tree.x, tree.z, terrainNormal);
+        slopeQuat.setFromUnitVectors(upAxis, terrainNormal);
+        yawQuat.setFromAxisAngle(upAxis, tree.rotY);
+        dummy.quaternion.copy(slopeQuat).multiply(yawQuat);
+        dummy.position.set(
+          tree.x + terrainNormal.x * 0.06,
+          tree.y + terrainNormal.y * 0.06,
+          tree.z + terrainNormal.z * 0.06,
+        );
+        const shadowSpan = (i < data.pines.length ? 4.5 : 5.0) * tree.scaleXZ;
+        dummy.scale.set(shadowSpan, 1, shadowSpan);
+        dummy.updateMatrix();
+        contactShadowRef.current!.setMatrixAt(i, dummy.matrix);
+      });
+      finalizeInstancedMesh(contactShadowRef.current, false, 2.5);
+    }
+
+    if (rootGrassRef.current) {
+      data.rootGrass.forEach((g, i) => {
+        getTerrainNormal(g.x, g.z, terrainNormal);
+        terrainNormal.lerp(upAxis, 0.55).normalize();
+        slopeQuat.setFromUnitVectors(upAxis, terrainNormal);
+        yawQuat.setFromAxisAngle(upAxis, g.rotY);
+        dummy.quaternion.copy(slopeQuat).multiply(yawQuat);
+        dummy.position.set(g.x, g.y - 0.02, g.z);
+        dummy.scale.set(g.scale, g.scale * (0.85 + g.tone * 0.45), g.scale);
+        dummy.updateMatrix();
+        rootGrassRef.current!.setMatrixAt(i, dummy.matrix);
+
+        c.set('#445c2c').lerp(new THREE.Color('#a4863c'), g.tone);
+        rootGrassRef.current!.setColorAt(i, c);
+      });
+      finalizeInstancedMesh(rootGrassRef.current, true, 1.0);
+    }
+
+    if (rootBushRef.current) {
+      data.rootBushes.forEach((b, i) => {
+        dummy.position.set(b.x, b.y + 0.12 * b.scale, b.z);
+        dummy.rotation.set((b.tone - 0.5) * 0.22, b.rotY, (0.5 - b.tone) * 0.22);
+        dummy.scale.set(b.scale * 1.15, b.scale * 0.78, b.scale * 1.1);
+        dummy.updateMatrix();
+        rootBushRef.current!.setMatrixAt(i, dummy.matrix);
+
+        sampleFoliageShade(c, b.tone, b.tone * 0.9, b.tone > 0.55);
+        rootBushRef.current!.setColorAt(i, c);
+      });
+      finalizeInstancedMesh(rootBushRef.current, true, 1.0);
+    }
+
+    if (rootRockRef.current) {
+      data.rootRocks.forEach((r, i) => {
+        getTerrainNormal(r.x, r.z, terrainNormal);
+        dummy.position.set(
+          r.x - terrainNormal.x * 0.1 * r.scale,
+          r.y - 0.12 * r.scale,
+          r.z - terrainNormal.z * 0.1 * r.scale,
+        );
+        dummy.rotation.set(r.tone * 0.8, r.rotY, (1 - r.tone) * 0.6);
+        dummy.scale.set(r.scale * 1.25, r.scale * 0.68, r.scale * 1.05);
+        dummy.updateMatrix();
+        rootRockRef.current!.setMatrixAt(i, dummy.matrix);
+
+        c.set('#4c4b45').lerp(new THREE.Color('#6f6659'), r.tone);
+        rootRockRef.current!.setColorAt(i, c);
+      });
+      finalizeInstancedMesh(rootRockRef.current, true, 1.0);
+    }
+
+    if (boulderRef.current) {
+      data.boulders.forEach((b, i) => {
+        dummy.position.set(b.x, b.y, b.z);
+        dummy.rotation.set(b.tone * 0.6, b.rotY, b.tone * 0.4);
+        dummy.scale.set(b.scale * 1.25, b.scale * 0.72, b.scale);
+        dummy.updateMatrix();
+        boulderRef.current!.setMatrixAt(i, dummy.matrix);
+        c.set('#5a554e').lerp(new THREE.Color('#746a5c'), b.tone);
+        boulderRef.current!.setColorAt(i, c);
+      });
+      finalizeInstancedMesh(boulderRef.current, true, 1.5);
+    }
+
+    if (grassRef.current) {
+      data.grassTufts.forEach((g, i) => {
+        getTerrainNormal(g.x, g.z, terrainNormal);
+        terrainNormal.lerp(upAxis, 0.6).normalize();
+        slopeQuat.setFromUnitVectors(upAxis, terrainNormal);
+        yawQuat.setFromAxisAngle(upAxis, g.rotY);
+        dummy.quaternion.copy(slopeQuat).multiply(yawQuat);
+        dummy.position.set(g.x, g.y - 0.02, g.z);
+        dummy.scale.set(g.scale * 1.1, g.scale * (0.85 + g.tone * 0.4), g.scale * 1.1);
+        dummy.updateMatrix();
+        grassRef.current!.setMatrixAt(i, dummy.matrix);
+
+        c.set('#526935').lerp(new THREE.Color('#b69242'), g.tone);
+        grassRef.current!.setColorAt(i, c);
+      });
+      finalizeInstancedMesh(grassRef.current, true, 1.0);
+    }
+  }, [data]);
+
+  return (
+    <group>
+      {data.allTrees.length > 0 && (
+        <instancedMesh
+          ref={contactShadowRef}
+          geometry={assets.contactShadowGeo}
+          material={assets.contactShadowMat}
+          args={[undefined, undefined, data.allTrees.length]}
+        />
+      )}
+
+      {data.pines.length > 0 && (
+        <>
+          <instancedMesh
+            ref={pineTrunkRef}
+            geometry={assets.pineTrunkGeo}
+            material={assets.pineTrunkMat}
+            args={[undefined, undefined, data.pines.length]}
+          />
+          <instancedMesh
+            ref={pineLowRef}
+            geometry={assets.pineLowGeo}
+            material={assets.pineFoliageMat}
+            args={[undefined, undefined, data.pines.length]}
+            castShadow
+            receiveShadow
+          />
+          <instancedMesh
+            ref={pineMidRef}
+            geometry={assets.pineMidGeo}
+            material={assets.pineFoliageMat}
+            args={[undefined, undefined, data.pines.length]}
+            castShadow
+            receiveShadow
+          />
+          <instancedMesh
+            ref={pineTopRef}
+            geometry={assets.pineTopGeo}
+            material={assets.pineFoliageMat}
+            args={[undefined, undefined, data.pines.length]}
+            castShadow
+            receiveShadow
+          />
+        </>
+      )}
+
+      {data.oaks.length > 0 && (
+        <>
+          <instancedMesh
+            ref={oakTrunkRef}
+            geometry={assets.oakTrunkGeo}
+            material={assets.oakTrunkMat}
+            args={[undefined, undefined, data.oaks.length]}
+          />
+          <instancedMesh
+            ref={oakCanopyMainRef}
+            geometry={assets.oakCanopyMainGeo}
+            material={assets.oakFoliageMat}
+            args={[undefined, undefined, data.oaks.length]}
+            castShadow
+            receiveShadow
+          />
+          <instancedMesh
+            ref={oakCanopySubRef}
+            geometry={assets.oakCanopySubGeo}
+            material={assets.oakFoliageMat}
+            args={[undefined, undefined, data.oaks.length]}
+            castShadow
+            receiveShadow
+          />
+        </>
+      )}
+
+      {data.rootGrass.length > 0 && (
+        <instancedMesh
+          ref={rootGrassRef}
+          geometry={assets.crossedGrassGeo}
+          material={assets.grassMat}
+          args={[undefined, undefined, data.rootGrass.length]}
+        />
+      )}
+
+      {data.rootBushes.length > 0 && (
+        <instancedMesh
+          ref={rootBushRef}
+          geometry={assets.rootBushGeo}
+          material={assets.bushMat}
+          args={[undefined, undefined, data.rootBushes.length]}
+          receiveShadow
+        />
+      )}
+
+      {data.rootRocks.length > 0 && (
+        <instancedMesh
+          ref={rootRockRef}
+          geometry={assets.rootRockGeo}
+          material={assets.rootRockMat}
+          args={[undefined, undefined, data.rootRocks.length]}
+          receiveShadow
+        />
+      )}
+
+      {data.boulders.length > 0 && (
+        <instancedMesh
+          ref={boulderRef}
+          geometry={assets.boulderGeo}
+          material={assets.boulderMat}
+          args={[undefined, undefined, data.boulders.length]}
+          receiveShadow
+        />
+      )}
+
+      {data.grassTufts.length > 0 && (
+        <instancedMesh
+          ref={grassRef}
+          geometry={assets.crossedGrassGeo}
+          material={assets.grassMat}
+          args={[undefined, undefined, data.grassTufts.length]}
+        />
+      )}
+    </group>
+  );
+});
+
+export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
   const skyUniforms = useMemo(
     () => ({
       uSunDirection: { value: SUN_DIRECTION.clone() },
@@ -1137,26 +1516,117 @@ export function RoadAndTerrain() {
     };
   }, [billboardExclusionZones]);
 
+  // Shared trunk/rock geometries & static materials across frustum-culled spatial chunks
+  const pineTrunkGeo = useMemo(() => new THREE.CylinderGeometry(0.16, 0.28, 2.9, 7), []);
+  const oakTrunkGeo = useMemo(() => new THREE.CylinderGeometry(0.2, 0.34, 2.6, 7), []);
+  const boulderGeo = useMemo(() => new THREE.DodecahedronGeometry(0.9, 0), []);
+
+  const pineTrunkMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#4a3728', roughness: 0.92 }), []);
+  const oakTrunkMat = useMemo(() => new THREE.MeshStandardMaterial({ color: '#4f3b2b', roughness: 0.92 }), []);
+  const rootRockMat = useMemo(() => new THREE.MeshStandardMaterial({ roughness: 0.93, metalness: 0.04 }), []);
+  const boulderMat = useMemo(() => new THREE.MeshStandardMaterial({ roughness: 0.92 }), []);
+  const contactShadowMat = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        map: contactShadowTexture,
+        transparent: true,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      }),
+    [contactShadowTexture],
+  );
+
   // Build vertex-colored terrain mesh using tree trunk spatial positions
   const terrainGeo = useMemo(() => buildTerrainGeometry(allTrees), [allTrees]);
 
-  // Instanced refs
-  const pineTrunkRef = useRef<THREE.InstancedMesh>(null);
-  const pineLowRef = useRef<THREE.InstancedMesh>(null);
-  const pineMidRef = useRef<THREE.InstancedMesh>(null);
-  const pineTopRef = useRef<THREE.InstancedMesh>(null);
+  // Bucket foliage & roadside props into 4 spatial Z-chunks so offscreen/behind-camera chunks cull cleanly
+  const foliageChunks = useMemo<FoliageChunkData[]>(() => {
+    const chunkCount = 4;
+    const zTop = 60;
+    const zSpan = Math.max(100, zTop - (OVERLOOK_CENTER.z - 40));
+    const idxForZ = (z: number) =>
+      Math.min(chunkCount - 1, Math.max(0, Math.floor(((zTop - z) / zSpan) * chunkCount)));
 
-  const oakTrunkRef = useRef<THREE.InstancedMesh>(null);
-  const oakCanopyMainRef = useRef<THREE.InstancedMesh>(null);
-  const oakCanopySubRef = useRef<THREE.InstancedMesh>(null);
+    const chunks: FoliageChunkData[] = Array.from({ length: chunkCount }, () => ({
+      pines: [],
+      oaks: [],
+      allTrees: [],
+      rootGrass: [],
+      rootBushes: [],
+      rootRocks: [],
+      boulders: [],
+      grassTufts: [],
+    }));
 
-  const contactShadowRef = useRef<THREE.InstancedMesh>(null);
-  const rootGrassRef = useRef<THREE.InstancedMesh>(null);
-  const rootBushRef = useRef<THREE.InstancedMesh>(null);
-  const rootRockRef = useRef<THREE.InstancedMesh>(null);
+    for (const p of pines) {
+      const c = chunks[idxForZ(p.z)];
+      c.pines.push(p);
+      c.allTrees.push(p);
+    }
+    for (const o of oaks) {
+      const c = chunks[idxForZ(o.z)];
+      c.oaks.push(o);
+      c.allTrees.push(o);
+    }
+    for (const item of rootGrass) chunks[idxForZ(item.z)].rootGrass.push(item);
+    for (const item of rootBushes) chunks[idxForZ(item.z)].rootBushes.push(item);
+    for (const item of rootRocks) chunks[idxForZ(item.z)].rootRocks.push(item);
+    for (const item of boulders) chunks[idxForZ(item.z)].boulders.push(item);
+    for (const item of grassTufts) chunks[idxForZ(item.z)].grassTufts.push(item);
 
-  const boulderRef = useRef<THREE.InstancedMesh>(null);
-  const grassRef = useRef<THREE.InstancedMesh>(null);
+    return chunks;
+  }, [boulders, grassTufts, oaks, pines, rootBushes, rootGrass, rootRocks]);
+
+  const foliageSharedAssets = useMemo<FoliageChunkSharedAssets>(
+    () => ({
+      contactShadowGeo,
+      contactShadowMat,
+      pineTrunkGeo,
+      pineTrunkMat,
+      pineLowGeo,
+      pineMidGeo,
+      pineTopGeo,
+      pineFoliageMat,
+      oakTrunkGeo,
+      oakTrunkMat,
+      oakCanopyMainGeo,
+      oakCanopySubGeo,
+      oakFoliageMat,
+      crossedGrassGeo,
+      grassMat,
+      rootBushGeo,
+      bushMat,
+      rootRockGeo,
+      rootRockMat,
+      boulderGeo,
+      boulderMat,
+    }),
+    [
+      boulderGeo,
+      boulderMat,
+      bushMat,
+      contactShadowGeo,
+      contactShadowMat,
+      crossedGrassGeo,
+      grassMat,
+      oakCanopyMainGeo,
+      oakCanopySubGeo,
+      oakFoliageMat,
+      oakTrunkGeo,
+      oakTrunkMat,
+      pineFoliageMat,
+      pineLowGeo,
+      pineMidGeo,
+      pineTopGeo,
+      pineTrunkGeo,
+      pineTrunkMat,
+      rootBushGeo,
+      rootRockGeo,
+      rootRockMat,
+    ],
+  );
 
   // Dispose procedural GPU assets cleanly on unmount
   useEffect(() => {
@@ -1172,6 +1642,9 @@ export function RoadAndTerrain() {
       leftFogLineGeo.dispose();
       rightFogLineGeo.dispose();
       guardrailSpans.forEach((s) => s.geo.dispose());
+      pineTrunkGeo.dispose();
+      oakTrunkGeo.dispose();
+      boulderGeo.dispose();
       pineLowGeo.dispose();
       pineMidGeo.dispose();
       pineTopGeo.dispose();
@@ -1184,11 +1657,19 @@ export function RoadAndTerrain() {
       oakFoliageMat.dispose();
       grassMat.dispose();
       bushMat.dispose();
+      pineTrunkMat.dispose();
+      oakTrunkMat.dispose();
+      rootRockMat.dispose();
+      boulderMat.dispose();
+      contactShadowMat.dispose();
     };
   }, [
     asphaltTextures,
+    boulderGeo,
+    boulderMat,
     bushMat,
     contactShadowGeo,
+    contactShadowMat,
     contactShadowTexture,
     crossedGrassGeo,
     grassMat,
@@ -1198,26 +1679,26 @@ export function RoadAndTerrain() {
     oakCanopyMainGeo,
     oakCanopySubGeo,
     oakFoliageMat,
+    oakTrunkGeo,
+    oakTrunkMat,
     pineFoliageMat,
     pineLowGeo,
     pineMidGeo,
     pineTopGeo,
+    pineTrunkGeo,
+    pineTrunkMat,
     rightFogLineGeo,
     roadGeo,
     rootBushGeo,
     rootRockGeo,
+    rootRockMat,
     shoulderGeo,
     terrainGeo,
   ]);
 
-  // Populate all static InstancedMeshes once at mount
+  // Populate road dashes & guardrail posts once at mount
   useEffect(() => {
     const dummy = new THREE.Object3D();
-    const c = new THREE.Color();
-    const upAxis = new THREE.Vector3(0, 1, 0);
-    const terrainNormal = new THREE.Vector3();
-    const slopeQuat = new THREE.Quaternion();
-    const yawQuat = new THREE.Quaternion();
 
     // 1. Dashed center markings
     if (dashRef.current) {
@@ -1257,210 +1738,7 @@ export function RoadAndTerrain() {
       guardrailPostRef.current.instanceMatrix.needsUpdate = true;
       delineatorRef.current.instanceMatrix.needsUpdate = true;
     }
-
-    // 3. Organic Pine Trees (randomized Y rotation, non-uniform scale, deep-pine -> olive -> amber shades)
-    if (pineTrunkRef.current && pineLowRef.current && pineMidRef.current && pineTopRef.current) {
-      pines.forEach((tree, i) => {
-        const sxz = tree.scaleXZ;
-        const sy = tree.scaleY;
-        dummy.rotation.set(tree.tiltX, tree.rotY, tree.tiltZ);
-
-        dummy.position.set(tree.x, tree.y + 1.4 * sy, tree.z);
-        dummy.scale.set(sxz, sy, sxz);
-        dummy.updateMatrix();
-        pineTrunkRef.current!.setMatrixAt(i, dummy.matrix);
-
-        dummy.position.set(tree.x, tree.y + 3.4 * sy, tree.z);
-        dummy.updateMatrix();
-        pineLowRef.current!.setMatrixAt(i, dummy.matrix);
-
-        dummy.rotation.set(tree.tiltX, tree.rotY + 0.55, tree.tiltZ);
-        dummy.position.set(tree.x, tree.y + 5.1 * sy, tree.z);
-        dummy.updateMatrix();
-        pineMidRef.current!.setMatrixAt(i, dummy.matrix);
-
-        dummy.rotation.set(tree.tiltX, tree.rotY + 1.1, tree.tiltZ);
-        dummy.position.set(tree.x, tree.y + 6.6 * sy, tree.z);
-        dummy.updateMatrix();
-        pineTopRef.current!.setMatrixAt(i, dummy.matrix);
-
-        sampleFoliageShade(c, tree.tone, tree.amberWeight, false);
-        pineLowRef.current!.setColorAt(i, c);
-        pineMidRef.current!.setColorAt(i, c.clone().offsetHSL(0.008, 0.03, 0.035));
-        pineTopRef.current!.setColorAt(i, c.clone().offsetHSL(0.015, 0.04, 0.065));
-      });
-      [pineTrunkRef, pineLowRef, pineMidRef, pineTopRef].forEach((ref) => {
-        if (ref.current) {
-          ref.current.instanceMatrix.needsUpdate = true;
-          if (ref.current.instanceColor) ref.current.instanceColor.needsUpdate = true;
-        }
-      });
-    }
-
-    // 4. Organic Oak Trees (displaced icosahedron crowns + deep-olive -> autumn amber variation)
-    if (oakTrunkRef.current && oakCanopyMainRef.current && oakCanopySubRef.current) {
-      oaks.forEach((tree, i) => {
-        const sxz = tree.scaleXZ;
-        const sy = tree.scaleY;
-        dummy.rotation.set(tree.tiltX, tree.rotY, tree.tiltZ);
-
-        dummy.position.set(tree.x, tree.y + 1.25 * sy, tree.z);
-        dummy.scale.set(sxz, sy, sxz);
-        dummy.updateMatrix();
-        oakTrunkRef.current!.setMatrixAt(i, dummy.matrix);
-
-        dummy.position.set(tree.x, tree.y + 3.65 * sy, tree.z);
-        dummy.scale.set(sxz * 1.12, sy * 0.96, sxz * 1.06);
-        dummy.updateMatrix();
-        oakCanopyMainRef.current!.setMatrixAt(i, dummy.matrix);
-
-        dummy.rotation.set(tree.tiltX, tree.rotY + 1.35, tree.tiltZ);
-        dummy.position.set(
-          tree.x + Math.cos(tree.rotY) * 1.05 * sxz,
-          tree.y + 3.2 * sy,
-          tree.z + Math.sin(tree.rotY) * 1.05 * sxz,
-        );
-        dummy.scale.set(sxz * 0.82, sy * 0.76, sxz * 0.8);
-        dummy.updateMatrix();
-        oakCanopySubRef.current!.setMatrixAt(i, dummy.matrix);
-
-        sampleFoliageShade(c, tree.tone, tree.amberWeight, true);
-        oakCanopyMainRef.current!.setColorAt(i, c);
-        oakCanopySubRef.current!.setColorAt(i, c.clone().offsetHSL(-0.015, 0.04, 0.04));
-      });
-      [oakTrunkRef, oakCanopyMainRef, oakCanopySubRef].forEach((ref) => {
-        if (ref.current) {
-          ref.current.instanceMatrix.needsUpdate = true;
-          if (ref.current.instanceColor) ref.current.instanceColor.needsUpdate = true;
-        }
-      });
-    }
-
-    // 5. Tree Contact Shadows aligned cleanly to terrain surface normal beneath every trunk
-    if (contactShadowRef.current) {
-      allTrees.forEach((tree, i) => {
-        getTerrainNormal(tree.x, tree.z, terrainNormal);
-        slopeQuat.setFromUnitVectors(upAxis, terrainNormal);
-        yawQuat.setFromAxisAngle(upAxis, tree.rotY);
-        dummy.quaternion.copy(slopeQuat).multiply(yawQuat);
-
-        // Offset slightly along terrain normal so contact shadow never sinks into sloping terrain
-        dummy.position.set(
-          tree.x + terrainNormal.x * 0.06,
-          tree.y + terrainNormal.y * 0.06,
-          tree.z + terrainNormal.z * 0.06,
-        );
-        const shadowSpan = (i < pines.length ? 4.5 : 5.0) * tree.scaleXZ;
-        dummy.scale.set(shadowSpan, 1, shadowSpan);
-        dummy.updateMatrix();
-        contactShadowRef.current!.setMatrixAt(i, dummy.matrix);
-      });
-      contactShadowRef.current.instanceMatrix.needsUpdate = true;
-    }
-
-    // 6. Root Clutter Batch A: Crossed low-poly grass tufts
-    if (rootGrassRef.current) {
-      rootGrass.forEach((g, i) => {
-        getTerrainNormal(g.x, g.z, terrainNormal);
-        terrainNormal.lerp(upAxis, 0.55).normalize();
-        slopeQuat.setFromUnitVectors(upAxis, terrainNormal);
-        yawQuat.setFromAxisAngle(upAxis, g.rotY);
-        dummy.quaternion.copy(slopeQuat).multiply(yawQuat);
-        dummy.position.set(g.x, g.y - 0.02, g.z);
-        dummy.scale.set(g.scale, g.scale * (0.85 + g.tone * 0.45), g.scale);
-        dummy.updateMatrix();
-        rootGrassRef.current!.setMatrixAt(i, dummy.matrix);
-
-        c.set('#445c2c').lerp(new THREE.Color('#a4863c'), g.tone);
-        rootGrassRef.current!.setColorAt(i, c);
-      });
-      rootGrassRef.current.instanceMatrix.needsUpdate = true;
-      if (rootGrassRef.current.instanceColor) rootGrassRef.current.instanceColor.needsUpdate = true;
-    }
-
-    // 7. Root Clutter Batch B: Small displaced-icosahedron bushes
-    if (rootBushRef.current) {
-      rootBushes.forEach((b, i) => {
-        dummy.position.set(b.x, b.y + 0.12 * b.scale, b.z);
-        dummy.rotation.set((b.tone - 0.5) * 0.22, b.rotY, (0.5 - b.tone) * 0.22);
-        dummy.scale.set(b.scale * 1.15, b.scale * 0.78, b.scale * 1.1);
-        dummy.updateMatrix();
-        rootBushRef.current!.setMatrixAt(i, dummy.matrix);
-
-        sampleFoliageShade(c, b.tone, b.tone * 0.9, b.tone > 0.55);
-        rootBushRef.current!.setColorAt(i, c);
-      });
-      rootBushRef.current.instanceMatrix.needsUpdate = true;
-      if (rootBushRef.current.instanceColor) rootBushRef.current.instanceColor.needsUpdate = true;
-    }
-
-    // 8. Root Clutter Batch C: Low-poly rocks partially embedded in the ground
-    if (rootRockRef.current) {
-      rootRocks.forEach((r, i) => {
-        getTerrainNormal(r.x, r.z, terrainNormal);
-        dummy.position.set(
-          r.x - terrainNormal.x * 0.1 * r.scale,
-          r.y - 0.12 * r.scale,
-          r.z - terrainNormal.z * 0.1 * r.scale,
-        );
-        dummy.rotation.set(r.tone * 0.8, r.rotY, (1 - r.tone) * 0.6);
-        dummy.scale.set(r.scale * 1.25, r.scale * 0.68, r.scale * 1.05);
-        dummy.updateMatrix();
-        rootRockRef.current!.setMatrixAt(i, dummy.matrix);
-
-        c.set('#4c4b45').lerp(new THREE.Color('#6f6659'), r.tone);
-        rootRockRef.current!.setColorAt(i, c);
-      });
-      rootRockRef.current.instanceMatrix.needsUpdate = true;
-      if (rootRockRef.current.instanceColor) rootRockRef.current.instanceColor.needsUpdate = true;
-    }
-
-    // 9. Roadside boulders
-    if (boulderRef.current) {
-      boulders.forEach((b, i) => {
-        dummy.position.set(b.x, b.y, b.z);
-        dummy.rotation.set(b.tone * 0.6, b.rotY, b.tone * 0.4);
-        dummy.scale.set(b.scale * 1.25, b.scale * 0.72, b.scale);
-        dummy.updateMatrix();
-        boulderRef.current!.setMatrixAt(i, dummy.matrix);
-        c.set('#5a554e').lerp(new THREE.Color('#746a5c'), b.tone);
-        boulderRef.current!.setColorAt(i, c);
-      });
-      boulderRef.current.instanceMatrix.needsUpdate = true;
-      if (boulderRef.current.instanceColor) boulderRef.current.instanceColor.needsUpdate = true;
-    }
-
-    // 10. Roadside crossed grass tufts
-    if (grassRef.current) {
-      grassTufts.forEach((g, i) => {
-        getTerrainNormal(g.x, g.z, terrainNormal);
-        terrainNormal.lerp(upAxis, 0.6).normalize();
-        slopeQuat.setFromUnitVectors(upAxis, terrainNormal);
-        yawQuat.setFromAxisAngle(upAxis, g.rotY);
-        dummy.quaternion.copy(slopeQuat).multiply(yawQuat);
-        dummy.position.set(g.x, g.y - 0.02, g.z);
-        dummy.scale.set(g.scale * 1.1, g.scale * (0.85 + g.tone * 0.4), g.scale * 1.1);
-        dummy.updateMatrix();
-        grassRef.current!.setMatrixAt(i, dummy.matrix);
-
-        c.set('#526935').lerp(new THREE.Color('#b69242'), g.tone);
-        grassRef.current!.setColorAt(i, c);
-      });
-      grassRef.current.instanceMatrix.needsUpdate = true;
-      if (grassRef.current.instanceColor) grassRef.current.instanceColor.needsUpdate = true;
-    }
-  }, [
-    allTrees,
-    boulders,
-    dashCount,
-    grassTufts,
-    guardrailPostData,
-    oaks,
-    pines,
-    rootBushes,
-    rootGrass,
-    rootRocks,
-  ]);
+  }, [dashCount, guardrailPostData]);
 
   const overlookYaw = useMemo(
     () => Math.atan2(OVERLOOK_TANGENT.x, OVERLOOK_TANGENT.z),
@@ -1625,132 +1903,10 @@ export function RoadAndTerrain() {
         </group>
       ))}
 
-      {/* Soft dark-olive contact shadows aligned to terrain normal beneath every tree trunk */}
-      <instancedMesh
-        ref={contactShadowRef}
-        geometry={contactShadowGeo}
-        args={[undefined, undefined, allTrees.length]}
-        frustumCulled={false}
-      >
-        <meshBasicMaterial
-          map={contactShadowTexture}
-          transparent
-          depthWrite={false}
-          polygonOffset
-          polygonOffsetFactor={-2}
-          polygonOffsetUnits={-2}
-        />
-      </instancedMesh>
-
-      {/* Instanced Organic Pine Trees */}
-      <instancedMesh ref={pineTrunkRef} args={[undefined, undefined, pines.length]} castShadow frustumCulled={false}>
-        <cylinderGeometry args={[0.16, 0.28, 2.9, 7]} />
-        <meshStandardMaterial color="#4a3728" roughness={0.92} />
-      </instancedMesh>
-      <instancedMesh
-        ref={pineLowRef}
-        geometry={pineLowGeo}
-        material={pineFoliageMat}
-        args={[undefined, undefined, pines.length]}
-        castShadow
-        receiveShadow
-        frustumCulled={false}
-      />
-      <instancedMesh
-        ref={pineMidRef}
-        geometry={pineMidGeo}
-        material={pineFoliageMat}
-        args={[undefined, undefined, pines.length]}
-        castShadow
-        receiveShadow
-        frustumCulled={false}
-      />
-      <instancedMesh
-        ref={pineTopRef}
-        geometry={pineTopGeo}
-        material={pineFoliageMat}
-        args={[undefined, undefined, pines.length]}
-        castShadow
-        receiveShadow
-        frustumCulled={false}
-      />
-
-      {/* Instanced Organic Oak Trees (displaced icosahedrons with wind & rim light) */}
-      <instancedMesh ref={oakTrunkRef} args={[undefined, undefined, oaks.length]} castShadow frustumCulled={false}>
-        <cylinderGeometry args={[0.2, 0.34, 2.6, 7]} />
-        <meshStandardMaterial color="#4f3b2b" roughness={0.92} />
-      </instancedMesh>
-      <instancedMesh
-        ref={oakCanopyMainRef}
-        geometry={oakCanopyMainGeo}
-        material={oakFoliageMat}
-        args={[undefined, undefined, oaks.length]}
-        castShadow
-        receiveShadow
-        frustumCulled={false}
-      />
-      <instancedMesh
-        ref={oakCanopySubRef}
-        geometry={oakCanopySubGeo}
-        material={oakFoliageMat}
-        args={[undefined, undefined, oaks.length]}
-        castShadow
-        receiveShadow
-        frustumCulled={false}
-      />
-
-      {/* Root Clutter Batch 1: Crossed low-poly grass tufts */}
-      {rootGrass.length > 0 && (
-        <instancedMesh
-          ref={rootGrassRef}
-          geometry={crossedGrassGeo}
-          material={grassMat}
-          args={[undefined, undefined, rootGrass.length]}
-          frustumCulled={false}
-        />
-      )}
-
-      {/* Root Clutter Batch 2: Small displaced-icosahedron bushes */}
-      {rootBushes.length > 0 && (
-        <instancedMesh
-          ref={rootBushRef}
-          geometry={rootBushGeo}
-          material={bushMat}
-          args={[undefined, undefined, rootBushes.length]}
-          castShadow
-          receiveShadow
-          frustumCulled={false}
-        />
-      )}
-
-      {/* Root Clutter Batch 3: Low-poly rocks partially embedded in ground */}
-      {rootRocks.length > 0 && (
-        <instancedMesh
-          ref={rootRockRef}
-          geometry={rootRockGeo}
-          args={[undefined, undefined, rootRocks.length]}
-          castShadow
-          receiveShadow
-          frustumCulled={false}
-        >
-          <meshStandardMaterial roughness={0.93} metalness={0.04} />
-        </instancedMesh>
-      )}
-
-      {/* Roadside Boulders */}
-      <instancedMesh ref={boulderRef} args={[undefined, undefined, boulders.length]} castShadow receiveShadow frustumCulled={false}>
-        <dodecahedronGeometry args={[0.9, 0]} />
-        <meshStandardMaterial roughness={0.92} />
-      </instancedMesh>
-
-      {/* Roadside Crossed Grass Tufts */}
-      <instancedMesh
-        ref={grassRef}
-        geometry={crossedGrassGeo}
-        material={grassMat}
-        args={[undefined, undefined, grassTufts.length]}
-        frustumCulled={false}
-      />
+      {/* Spatial Z-chunks of trees, contact shadows, boulders, and wind-swaying root clutter */}
+      {foliageChunks.map((chunk, idx) => (
+        <FoliageChunk key={idx} data={chunk} assets={foliageSharedAssets} />
+      ))}
     </group>
   );
-}
+});

@@ -61,36 +61,70 @@ export const OVERLOOK_RADIUS = 16.5;
 /** Sun direction sitting low above the sunset horizon beyond the Destination Overlook */
 export const SUN_DIRECTION = new THREE.Vector3(-0.28, 0.145, -0.948).normalize();
 
-/**
- * Sample smoothly interpolated frame along the highway spline.
- */
-export function getRoadFrameAt(t: number): {
+export interface RoadFrame {
   point: THREE.Vector3;
   tangent: THREE.Vector3;
   right: THREE.Vector3;
   up: THREE.Vector3;
-} {
+}
+
+const _curvTan0 = new THREE.Vector3();
+const _curvTan1 = new THREE.Vector3();
+const _curvRight = new THREE.Vector3();
+const _curvDiff = new THREE.Vector3();
+
+function sampleTangentFromLut(t: number, out: THREE.Vector3): THREE.Vector3 {
   const clamped = THREE.MathUtils.clamp(t, 0, 1);
-  const point = roadCurve.getPointAt(clamped);
-  const tangent = roadCurve.getTangentAt(clamped).normalize();
-  const right = new THREE.Vector3().crossVectors(tangent, WORLD_UP).normalize();
-  const up = new THREE.Vector3().crossVectors(right, tangent).normalize();
-  return { point, tangent, right, up };
+  const f = clamped * LUT_COUNT;
+  const i0 = Math.min(LUT_COUNT - 1, Math.floor(f));
+  const alpha = f - i0;
+  return out
+    .copy(ROAD_SAMPLES[i0].tangent)
+    .lerp(ROAD_SAMPLES[i0 + 1].tangent, alpha)
+    .normalize();
 }
 
 /**
- * Computes signed horizontal curvature along the spline at t.
+ * Sample smoothly interpolated frame along the highway spline via O(1) LUT lookup.
+ * Pass `out` inside hot per-frame loops (`useFrame`) to avoid Vector3 allocations.
+ */
+export function getRoadFrameAt(t: number, out?: RoadFrame): RoadFrame {
+  const clamped = THREE.MathUtils.clamp(t, 0, 1);
+  const f = clamped * LUT_COUNT;
+  const i0 = Math.min(LUT_COUNT - 1, Math.floor(f));
+  const alpha = f - i0;
+
+  const s0 = ROAD_SAMPLES[i0];
+  const s1 = ROAD_SAMPLES[i0 + 1];
+
+  const target: RoadFrame = out ?? {
+    point: new THREE.Vector3(),
+    tangent: new THREE.Vector3(),
+    right: new THREE.Vector3(),
+    up: new THREE.Vector3(),
+  };
+
+  target.point.copy(s0.point).lerp(s1.point, alpha);
+  target.tangent.copy(s0.tangent).lerp(s1.tangent, alpha).normalize();
+  target.right.crossVectors(target.tangent, WORLD_UP).normalize();
+  target.up.crossVectors(target.right, target.tangent).normalize();
+
+  return target;
+}
+
+/**
+ * Computes signed horizontal curvature along the spline at t using zero-allocation LUT lookups.
  * Positive = turning right; Negative = turning left.
  */
 export function getRoadCurvatureAt(t: number): number {
   const delta = 0.012;
   const t0 = THREE.MathUtils.clamp(t - delta, 0, 1);
   const t1 = THREE.MathUtils.clamp(t + delta, 0, 1);
-  const tan0 = roadCurve.getTangentAt(t0);
-  const tan1 = roadCurve.getTangentAt(t1);
-  const right = new THREE.Vector3().crossVectors(tan0, WORLD_UP).normalize();
-  const dTan = new THREE.Vector3().subVectors(tan1, tan0);
-  const signedTurn = dTan.dot(right);
+  sampleTangentFromLut(t0, _curvTan0);
+  sampleTangentFromLut(t1, _curvTan1);
+  _curvRight.crossVectors(_curvTan0, WORLD_UP).normalize();
+  _curvDiff.subVectors(_curvTan1, _curvTan0);
+  const signedTurn = _curvDiff.dot(_curvRight);
   const arcStep = Math.max(0.001, (t1 - t0) * ROAD_TOTAL_LENGTH);
   return signedTurn / arcStep;
 }
@@ -171,8 +205,12 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
  * Multi-layered procedural rolling countryside hill height at world (x, z),
  * seamlessly carved along the highway corridor and flattened at the Destination Overlook.
  */
-export function getTerrainHeight(x: number, z: number): number {
-  const { sample, distSq, signedLateral } = findNearestRoadSample(x, z);
+export function getTerrainHeight(
+  x: number,
+  z: number,
+  nearest?: ReturnType<typeof findNearestRoadSample>,
+): number {
+  const { sample, distSq, signedLateral } = nearest ?? findNearestRoadSample(x, z);
   const dist = Math.sqrt(distSq);
 
   // Rolling countryside waves + larger distant hillside swells

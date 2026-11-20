@@ -366,7 +366,7 @@ function buildWheelArcFender(
  * Detailed 17-inch Y-spoke sport motorcycle wheel with LatheGeometry rounded-shoulder tire,
  * stepped alloy rim barrel, ventilated steel brake disc, and rear sprocket.
  */
-function SportWheel({
+const SportWheel = React.memo(function SportWheel({
   width = 0.14,
   isRear = false,
 }: {
@@ -618,7 +618,7 @@ function SportWheel({
       )}
     </group>
   );
-}
+});
 
 const BEAM_VERTEX_SHADER = /* glsl */ `
   varying vec2 vUv;
@@ -651,7 +651,7 @@ const BEAM_FRAGMENT_SHADER = /* glsl */ `
  * Procedural Bajaj Pulsar N250 naked streetfighter geometry constructed with
  * beveled ExtrudeGeometry, LatheGeometry, tapered TubeGeometry, and smooth vertex normals.
  */
-function ProceduralPulsarN250({
+const ProceduralPulsarN250 = React.memo(function ProceduralPulsarN250({
   frontWheelRef,
   rearWheelRef,
   tailGlowRef,
@@ -2043,9 +2043,13 @@ function ProceduralPulsarN250({
       </group>
     </group>
   );
-}
+});
 
-export function Motorcycle({ modelUrl, wheelNodeNames, telemetryRef }: MotorcycleProps) {
+export const Motorcycle = React.memo(function Motorcycle({
+  modelUrl,
+  wheelNodeNames,
+  telemetryRef,
+}: MotorcycleProps) {
   const bikeGroupRef = useRef<THREE.Group>(null);
   const leanGroupRef = useRef<THREE.Group>(null);
   const frontWheelRef = useRef<THREE.Group | null>(null);
@@ -2141,4 +2145,4 @@ export function Motorcycle({ modelUrl, wheelNodeNames, telemetryRef }: Motorcycl
       </group>
     </group>
   );
-}
+});

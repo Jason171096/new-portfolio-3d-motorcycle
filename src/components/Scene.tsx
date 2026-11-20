@@ -12,6 +12,7 @@ import {
   getRoadCurvatureAt,
   getRoadFrameAt,
   scrollProgressToBikeT,
+  type RoadFrame,
 } from '../utils/roadSpline';
 import { Motorcycle, type MotorcycleTelemetry } from './Motorcycle';
 import { ProjectWaypoints } from './ProjectWaypoints';
@@ -52,7 +53,7 @@ function getWaypointWeight(progress: number, wp: WaypointConfig): number {
   return 1;
 }
 
-function RigAndWorld({
+const RigAndWorld = React.memo(function RigAndWorld({
   scrollProgressRef,
   motorcycleModelUrl,
   reducedMotion,
@@ -66,7 +67,17 @@ function RigAndWorld({
   const leanRef = useRef(0);
   const pitchRef = useRef(0);
   const lastHudEmitRef = useRef(0);
-  const lastReportedWaypointIdRef = useRef<string | null>(null);
+  const lastTelemetryRef = useRef<{
+    waypointId: string | null;
+    percent: number;
+    miles: number;
+    speedMph: number;
+  }>({
+    waypointId: null,
+    percent: -1,
+    miles: -1,
+    speedMph: -1,
+  });
 
   const sunLightRef = useRef<THREE.DirectionalLight>(null);
   const sunTarget = useMemo(() => new THREE.Object3D(), []);
@@ -90,12 +101,20 @@ function RigAndWorld({
     telemetryRef.current.reducedMotion = reducedMotion;
   }, [reducedMotion]);
 
-  // Persistent relative camera offset vectors to avoid per-frame allocations
-  const camOffsetGoal = useMemo(() => new THREE.Vector3(), []);
-  const lookOffsetGoal = useMemo(() => new THREE.Vector3(), []);
-  const dampedCamOffset = useMemo(() => new THREE.Vector3(), []);
-  const dampedLookOffset = useMemo(() => new THREE.Vector3(), []);
+  // Persistent scratch & local-frame camera state to avoid per-frame allocations & world-space curve lag
+  const frameScratch = useMemo<RoadFrame>(
+    () => ({
+      point: new THREE.Vector3(),
+      tangent: new THREE.Vector3(),
+      right: new THREE.Vector3(),
+      up: new THREE.Vector3(),
+    }),
+    [],
+  );
+  const bikePosScratch = useMemo(() => new THREE.Vector3(), []);
   const currentLookAt = useMemo(() => new THREE.Vector3(), []);
+  const dampedCamLocalRef = useRef({ right: 0, up: 0, back: 0 });
+  const dampedLookLocalRef = useRef({ right: 0, up: 0, forward: 0 });
   const initializedCamRef = useRef(false);
 
   useFrame(({ clock }, rawDelta) => {
@@ -108,7 +127,7 @@ function RigAndWorld({
       prevBikeTRef.current = scrollProgressToBikeT(targetProgress);
     }
 
-    // 1. Frame-rate independent damping of scroll progress
+    // 1. Snappy damping (16.0) smooths discrete wheel ticks without lagging behind Lenis
     const prevProgress = smoothedProgressRef.current;
     if (reducedMotion || !initializedCamRef.current) {
       smoothedProgressRef.current = targetProgress;
@@ -116,7 +135,7 @@ function RigAndWorld({
       smoothedProgressRef.current = THREE.MathUtils.damp(
         smoothedProgressRef.current,
         targetProgress,
-        7.5,
+        16.0,
         dt,
       );
     }
@@ -124,16 +143,16 @@ function RigAndWorld({
     const p = smoothedProgressRef.current;
     const progressDelta = p - prevProgress;
 
-    // 2. Evaluate motorcycle spline position & displacement
+    // 2. Evaluate motorcycle spline position & displacement via zero-alloc LUT
     const bikeT = scrollProgressToBikeT(p);
     const bikeTDelta = bikeT - prevBikeTRef.current;
     prevBikeTRef.current = bikeT;
 
     const deltaDistance = bikeTDelta * ROAD_TOTAL_LENGTH;
     const instantSpeed = dt > 0.0001 ? Math.abs(deltaDistance) / dt : 0;
-    velocityRef.current = THREE.MathUtils.damp(velocityRef.current, instantSpeed, 6.5, dt);
+    velocityRef.current = THREE.MathUtils.damp(velocityRef.current, instantSpeed, 9.0, dt);
 
-    const frame = getRoadFrameAt(bikeT);
+    const frame = getRoadFrameAt(bikeT, frameScratch);
     const curvature = getRoadCurvatureAt(bikeT);
 
     // 3. Motorcycle banking/roll proportional to road curvature & travel velocity
@@ -145,7 +164,7 @@ function RigAndWorld({
           -0.34,
           0.34,
         );
-    leanRef.current = THREE.MathUtils.damp(leanRef.current, targetLean, 7.0, dt);
+    leanRef.current = THREE.MathUtils.damp(leanRef.current, targetLean, 9.0, dt);
 
     // Braking dive when decelerating onto the Destination Overlook (91%..99%)
     const isOverlookBraking = p > 0.91 && p < 0.988 && Math.abs(progressDelta) > 0.00008;
@@ -154,7 +173,7 @@ function RigAndWorld({
       : isOverlookBraking
         ? 0.045
         : -THREE.MathUtils.clamp(progressDelta * 18, -0.025, 0.04);
-    pitchRef.current = THREE.MathUtils.damp(pitchRef.current, targetPitch, 6.0, dt);
+    pitchRef.current = THREE.MathUtils.damp(pitchRef.current, targetPitch, 8.0, dt);
 
     // Slight scenic pull-off angle as motorcycle stops at the Overlook vista
     const overlookParkFactor = smoothstep(0.925, 0.99, p);
@@ -162,7 +181,7 @@ function RigAndWorld({
 
     // Place motorcycle neatly in right-center lane, pulling onto overlook right-center pad at summit
     const laneShift = THREE.MathUtils.lerp(0.65, 1.15, overlookParkFactor);
-    const bikePos = frame.point.clone().addScaledVector(frame.right, laneShift);
+    const bikePos = bikePosScratch.copy(frame.point).addScaledVector(frame.right, laneShift);
 
     const tState = telemetryRef.current;
     tState.position.copy(bikePos);
@@ -183,7 +202,7 @@ function RigAndWorld({
         .addScaledVector(SUN_DIRECTION, 52);
     }
 
-    // 5. Responsive camera framing & dynamic waypoint bias
+    // 5. Responsive camera framing & dynamic waypoint bias (damped in local bike coordinates)
     const aspect = size.width / Math.max(1, size.height);
     const isMobile = size.width < 768 || aspect < 1.0;
 
@@ -242,54 +261,106 @@ function RigAndWorld({
       ? 0
       : Math.sin(clock.elapsedTime * 0.9) * 0.05 * (1 - overlookParkFactor);
 
-    camOffsetGoal
-      .set(0, baseUp + biasUp, 0)
-      .addScaledVector(frame.right, rawChaseRight + threeQuarterChaseOffset + swayX)
-      .addScaledVector(frame.tangent, -(baseBack + biasBack));
+    const goalCamRight = rawChaseRight + threeQuarterChaseOffset + swayX;
+    const goalCamUp = baseUp + biasUp;
+    const goalCamBack = baseBack + biasBack;
 
-    lookOffsetGoal
-      .set(0, 1.05 + lookUp, 0)
-      .addScaledVector(frame.right, lookRight)
-      .addScaledVector(frame.tangent, 6.4 + lookForward);
+    const goalLookRight = lookRight;
+    const goalLookUp = 1.05 + lookUp;
+    const goalLookForward = 6.4 + lookForward;
 
     if (!initializedCamRef.current) {
-      dampedCamOffset.copy(camOffsetGoal);
-      dampedLookOffset.copy(lookOffsetGoal);
+      dampedCamLocalRef.current.right = goalCamRight;
+      dampedCamLocalRef.current.up = goalCamUp;
+      dampedCamLocalRef.current.back = goalCamBack;
+      dampedLookLocalRef.current.right = goalLookRight;
+      dampedLookLocalRef.current.up = goalLookUp;
+      dampedLookLocalRef.current.forward = goalLookForward;
       initializedCamRef.current = true;
     } else {
-      const offsetDamp = reducedMotion ? 18 : 6.0;
-      dampedCamOffset.x = THREE.MathUtils.damp(dampedCamOffset.x, camOffsetGoal.x, offsetDamp, dt);
-      dampedCamOffset.y = THREE.MathUtils.damp(dampedCamOffset.y, camOffsetGoal.y, offsetDamp, dt);
-      dampedCamOffset.z = THREE.MathUtils.damp(dampedCamOffset.z, camOffsetGoal.z, offsetDamp, dt);
+      const offsetDamp = reducedMotion ? 22 : 10.5;
+      dampedCamLocalRef.current.right = THREE.MathUtils.damp(
+        dampedCamLocalRef.current.right,
+        goalCamRight,
+        offsetDamp,
+        dt,
+      );
+      dampedCamLocalRef.current.up = THREE.MathUtils.damp(
+        dampedCamLocalRef.current.up,
+        goalCamUp,
+        offsetDamp,
+        dt,
+      );
+      dampedCamLocalRef.current.back = THREE.MathUtils.damp(
+        dampedCamLocalRef.current.back,
+        goalCamBack,
+        offsetDamp,
+        dt,
+      );
 
-      dampedLookOffset.x = THREE.MathUtils.damp(dampedLookOffset.x, lookOffsetGoal.x, offsetDamp + 1.0, dt);
-      dampedLookOffset.y = THREE.MathUtils.damp(dampedLookOffset.y, lookOffsetGoal.y, offsetDamp + 1.0, dt);
-      dampedLookOffset.z = THREE.MathUtils.damp(dampedLookOffset.z, lookOffsetGoal.z, offsetDamp + 1.0, dt);
+      dampedLookLocalRef.current.right = THREE.MathUtils.damp(
+        dampedLookLocalRef.current.right,
+        goalLookRight,
+        offsetDamp + 1.5,
+        dt,
+      );
+      dampedLookLocalRef.current.up = THREE.MathUtils.damp(
+        dampedLookLocalRef.current.up,
+        goalLookUp,
+        offsetDamp + 1.5,
+        dt,
+      );
+      dampedLookLocalRef.current.forward = THREE.MathUtils.damp(
+        dampedLookLocalRef.current.forward,
+        goalLookForward,
+        offsetDamp + 1.5,
+        dt,
+      );
     }
 
-    camera.position.copy(bikePos).add(dampedCamOffset);
-    currentLookAt.copy(bikePos).add(dampedLookOffset);
+    camera.position
+      .copy(bikePos)
+      .addScaledVector(frame.right, dampedCamLocalRef.current.right)
+      .addScaledVector(frame.tangent, -dampedCamLocalRef.current.back);
+    camera.position.y += dampedCamLocalRef.current.up;
+
+    currentLookAt
+      .copy(bikePos)
+      .addScaledVector(frame.right, dampedLookLocalRef.current.right)
+      .addScaledVector(frame.tangent, dampedLookLocalRef.current.forward);
+    currentLookAt.y += dampedLookLocalRef.current.up;
     camera.lookAt(currentLookAt);
 
-    // 6. Throttled HUD telemetry snapshot (~24Hz or immediate waypoint transition)
+    // 6. Emit HUD telemetry only when visible HUD values change (zero React work when idle)
     const waypointId = activeWaypoint?.id ?? null;
     const elapsed = clock.elapsedTime;
+    const percent = Math.round(p * 100);
+    const miles = Number((p * TOTAL_ROUTE_MILES).toFixed(2));
+    const cruisingMph =
+      p >= 0.985
+        ? 0
+        : Math.min(72, Math.round(velocityRef.current * 1.65));
+
+    const prev = lastTelemetryRef.current;
+    const hasVisualChange =
+      prev.waypointId !== waypointId ||
+      prev.percent !== percent ||
+      prev.miles !== miles ||
+      prev.speedMph !== cruisingMph;
+
     if (
-      elapsed - lastHudEmitRef.current > 0.042 ||
-      waypointId !== lastReportedWaypointIdRef.current
+      hasVisualChange &&
+      (elapsed - lastHudEmitRef.current > 0.048 || waypointId !== prev.waypointId)
     ) {
       lastHudEmitRef.current = elapsed;
-      lastReportedWaypointIdRef.current = waypointId;
-
-      // Map scroll velocity smoothly to realistic cruising speed (0..68 MPH), 0 when parked
-      const cruisingMph =
-        p >= 0.985
-          ? 0
-          : Math.min(72, Math.round(velocityRef.current * 1.65));
+      prev.waypointId = waypointId;
+      prev.percent = percent;
+      prev.miles = miles;
+      prev.speedMph = cruisingMph;
 
       onTelemetryUpdate({
         progress: p,
-        miles: Number((p * TOTAL_ROUTE_MILES).toFixed(2)),
+        miles,
         speedMph: cruisingMph,
         activeWaypoint,
       });
@@ -317,14 +388,14 @@ function RigAndWorld({
         intensity={2.45}
         color="#ffbe78"
         castShadow
-        shadow-mapSize={[2048, 2048]}
+        shadow-mapSize={[1024, 1024]}
         shadow-camera-near={5}
-        shadow-camera-far={120}
-        shadow-camera-left={-26}
-        shadow-camera-right={26}
-        shadow-camera-top={26}
-        shadow-camera-bottom={-26}
-        shadow-bias={-0.0004}
+        shadow-camera-far={105}
+        shadow-camera-left={-22}
+        shadow-camera-right={22}
+        shadow-camera-top={22}
+        shadow-camera-bottom={-22}
+        shadow-bias={-0.0005}
       />
 
       {/* Subtle cool twilight fill light from behind camera */}
@@ -335,14 +406,14 @@ function RigAndWorld({
       <Motorcycle modelUrl={motorcycleModelUrl} telemetryRef={telemetryRef} />
     </>
   );
-}
+});
 
-export function Scene(props: SceneProps) {
+export const Scene = React.memo(function Scene(props: SceneProps) {
   return (
     <div className="fixed inset-0 z-0 h-screen w-screen overflow-hidden bg-[#101218]">
       <Canvas
         shadows
-        dpr={[1, 2]}
+        dpr={[1, 1.5]}
         camera={{ fov: 45, near: 0.15, far: 1600 }}
         gl={{
           antialias: true,
@@ -355,4 +426,4 @@ export function Scene(props: SceneProps) {
       </Canvas>
     </div>
   );
-}
+});

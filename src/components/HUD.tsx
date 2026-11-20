@@ -161,7 +161,7 @@ export function HUD({ telemetry, onNavigate, reducedMotion }: HUDProps) {
           {isStart && activeWaypoint && (
             <section
               aria-label="Hero introduction"
-              className="pointer-events-auto glass-panel w-full max-w-[420px] rounded-3xl p-4 sm:p-6 transition-all duration-300"
+              className="pointer-events-auto glass-panel w-full max-w-[420px] rounded-3xl p-4 sm:p-6 transition-colors duration-200"
             >
               <div className="mb-2.5 inline-flex items-center gap-2 rounded-full border border-amber-300/25 bg-amber-400/10 px-3 py-1 font-mono text-[11px] uppercase tracking-widest text-amber-200">
                 <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
@@ -221,7 +221,7 @@ export function HUD({ telemetry, onNavigate, reducedMotion }: HUDProps) {
           {isProject && activeWaypoint && (
             <aside
               aria-label={activeWaypoint.title}
-              className={`pointer-events-auto glass-panel w-full max-w-[420px] rounded-3xl p-4 sm:p-5 transition-all duration-300 lg:absolute lg:bottom-0 ${desktopCardSide}`}
+              className={`pointer-events-auto glass-panel w-full max-w-[420px] rounded-3xl p-4 sm:p-5 transition-colors duration-200 lg:absolute lg:bottom-0 ${desktopCardSide}`}
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-full border border-white/15 bg-white/5 px-3 py-1 font-mono text-[11px] uppercase tracking-widest text-stone-200">

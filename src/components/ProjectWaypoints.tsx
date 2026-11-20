@@ -61,7 +61,7 @@ function useProjectTexture(waypoint: WaypointConfig): THREE.Texture {
   return texture;
 }
 
-function RoadsideBillboard({
+const RoadsideBillboard = React.memo(function RoadsideBillboard({
   waypoint,
   progressRef,
   reducedMotion,
@@ -206,16 +206,15 @@ function RoadsideBillboard({
           <meshStandardMaterial color="#14171f" metalness={0.82} roughness={0.28} />
         </mesh>
 
-        {/* Translucent frosted glassmorphic outer rim */}
+        {/* Translucent frosted glassmorphic outer rim (avoids expensive transmission render pass) */}
         <mesh position={[0, 0, -0.02]}>
           <boxGeometry args={[screenW + 0.72, screenH + 0.72, 0.06]} />
-          <meshPhysicalMaterial
+          <meshStandardMaterial
             color="#d8e2f2"
             transparent
-            opacity={0.24}
-            roughness={0.18}
-            metalness={0.1}
-            transmission={0.35}
+            opacity={0.22}
+            roughness={0.22}
+            metalness={0.18}
           />
         </mesh>
 
@@ -268,23 +267,75 @@ function RoadsideBillboard({
             {`${waypoint.mileNumber}  //  ${waypoint.title.toUpperCase()}`}
           </Text>
         </group>
-
-        {/* Subtle warm uplight washing the frame */}
-        <pointLight
-          position={[0, -screenH * 0.45, 2.2]}
-          color={waypoint.accentColor}
-          intensity={3.5}
-          distance={12}
-          decay={1.8}
-        />
       </group>
     </group>
   );
+});
+
+/**
+ * Single shared roving accent light positioned at the closest project billboard
+ * so only one billboard PointLight is ever compiled into scene PBR shaders.
+ */
+function RovingBillboardLight({
+  progressRef,
+}: {
+  progressRef: React.MutableRefObject<number>;
+}) {
+  const lightRef = useRef<THREE.PointLight>(null);
+
+  const anchors = useMemo(
+    () =>
+      PROJECT_WAYPOINTS.map((wp) => {
+        const frame = getRoadFrameAt(wp.anchorT);
+        const sideSign = wp.side === 'left' ? -1 : 1;
+        const lateral = (wp.lateralOffset ?? 9.2) * sideSign;
+        const bx = frame.point.x + frame.right.x * lateral;
+        const bz = frame.point.z + frame.right.z * lateral;
+        const by = getTerrainHeight(bx, bz) + 1.75;
+
+        const approachFrame = getRoadFrameAt(Math.max(0.02, wp.anchorT - 0.04));
+        const dir = new THREE.Vector3(approachFrame.point.x - bx, 0, approachFrame.point.z - bz).normalize();
+        return {
+          rangeMid: (wp.range[0] + wp.range[1]) * 0.5,
+          range: wp.range,
+          pos: new THREE.Vector3(bx + dir.x * 2.2, by, bz + dir.z * 2.2),
+          color: new THREE.Color(wp.accentColor),
+        };
+      }),
+    [],
+  );
+
+  useFrame(() => {
+    const light = lightRef.current;
+    if (!light || anchors.length === 0) return;
+
+    const p = progressRef.current;
+    let best = anchors[0];
+    let bestDist = Infinity;
+    for (const a of anchors) {
+      const d = Math.abs(p - a.rangeMid);
+      if (d < bestDist) {
+        bestDist = d;
+        best = a;
+      }
+    }
+
+    light.position.copy(best.pos);
+    light.color.copy(best.color);
+    const inRange = p >= best.range[0] - 0.05 && p <= best.range[1] + 0.05;
+    light.intensity = inRange ? 3.8 : 1.4;
+  });
+
+  return <pointLight ref={lightRef} intensity={1.8} distance={14} decay={1.8} />;
 }
 
-export function ProjectWaypoints({ progressRef, reducedMotion }: ProjectWaypointsProps) {
+export const ProjectWaypoints = React.memo(function ProjectWaypoints({
+  progressRef,
+  reducedMotion,
+}: ProjectWaypointsProps) {
   return (
     <group name="project-waypoints">
+      <RovingBillboardLight progressRef={progressRef} />
       {PROJECT_WAYPOINTS.map((wp) => (
         <RoadsideBillboard
           key={wp.id}
@@ -295,4 +346,4 @@ export function ProjectWaypoints({ progressRef, reducedMotion }: ProjectWaypoint
       ))}
     </group>
   );
-}
+});
