@@ -5,16 +5,16 @@ import { PROJECT_WAYPOINTS } from '../data/waypoints';
 import {
   OVERLOOK_CENTER,
   OVERLOOK_RADIUS,
-  OVERLOOK_T,
-  OVERLOOK_TANGENT,
   ROAD_HALF_WIDTH,
   ROAD_SAMPLES,
   ROAD_TOTAL_LENGTH,
   ROAD_WIDTH,
+  SHOULDER_WIDTH,
   SUN_DIRECTION,
   findNearestRoadSample,
   getRoadFrameAt,
   getTerrainHeight,
+  type SplineSample,
 } from '../utils/roadSpline';
 import { createAsphaltTextures } from '../utils/textures';
 
@@ -22,7 +22,7 @@ const SKY_VERTEX_SHADER = /* glsl */ `
   varying vec3 vWorldDirection;
   void main() {
     vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-    vWorldDirection = normalize(position);
+    vWorldDirection = normalize(worldPosition.xyz - cameraPosition);
     gl_Position = projectionMatrix * viewMatrix * worldPosition;
   }
 `;
@@ -35,31 +35,54 @@ const SKY_FRAGMENT_SHADER = /* glsl */ `
     vec3 dir = normalize(vWorldDirection);
     float h = clamp(dir.y, -0.25, 1.0);
 
-    vec3 nadirColor = vec3(0.11, 0.09, 0.12);
-    vec3 horizonColor = vec3(0.99, 0.67, 0.38);
-    vec3 midSkyColor = vec3(0.76, 0.42, 0.39);
-    vec3 upperSkyColor = vec3(0.24, 0.27, 0.44);
-    vec3 zenithColor = vec3(0.09, 0.13, 0.24);
+    // Warm golden-hour gradient: luminous cream-gold horizon -> warm amber -> burnt orange overhead
+    vec3 nadirColor = vec3(0.76, 0.49, 0.25);
+    vec3 horizonColor = vec3(1.00, 0.92, 0.68);
+    vec3 lowerAmberColor = vec3(0.97, 0.70, 0.34);
+    vec3 midOrangeColor = vec3(0.87, 0.48, 0.21);
+    vec3 overheadColor = vec3(0.62, 0.26, 0.11);
 
-    vec3 sky = mix(nadirColor, horizonColor, smoothstep(-0.12, 0.04, h));
-    sky = mix(sky, midSkyColor, smoothstep(0.03, 0.22, h));
-    sky = mix(sky, upperSkyColor, smoothstep(0.20, 0.50, h));
-    sky = mix(sky, zenithColor, smoothstep(0.45, 0.92, h));
+    vec3 sky = mix(nadirColor, horizonColor, smoothstep(-0.14, 0.02, h));
+    sky = mix(sky, lowerAmberColor, smoothstep(0.02, 0.14, h));
+    sky = mix(sky, midOrangeColor, smoothstep(0.14, 0.36, h));
+    sky = mix(sky, overheadColor, smoothstep(0.36, 0.85, h));
 
-    // Sun glow + crisp golden-hour disc
+    // Expansive warm golden sun bloom halo around the sunset core
     float sunDot = max(dot(dir, normalize(uSunDirection)), 0.0);
-    float wideHalo = pow(sunDot, 6.0) * 0.42;
-    float tightHalo = pow(sunDot, 48.0) * 0.65;
-    float sunDisc = smoothstep(0.9988, 0.9995, sunDot) * 2.2;
+    float wideHalo = pow(sunDot, 5.0) * 0.48;
+    float tightHalo = pow(sunDot, 32.0) * 0.72;
+    float coreBloom = pow(sunDot, 160.0) * 0.85;
 
-    vec3 sunTint = vec3(1.0, 0.84, 0.56);
-    sky += sunTint * (wideHalo + tightHalo) + vec3(1.0, 0.95, 0.85) * sunDisc;
+    sky += vec3(1.0, 0.86, 0.54) * wideHalo;
+    sky += vec3(1.0, 0.94, 0.74) * tightHalo;
+    sky += vec3(1.0, 0.98, 0.90) * coreBloom;
 
-    // Subtle warm horizon haze band
-    float horizonBand = exp(-abs(h) * 14.0) * 0.18;
-    sky += vec3(1.0, 0.68, 0.38) * horizonBand;
+    // Luminous cream-gold horizon haze band
+    float horizonBand = exp(-abs(h - 0.01) * 12.0) * 0.22;
+    sky += vec3(1.0, 0.85, 0.55) * horizonBand;
 
     gl_FragColor = vec4(sky, 1.0);
+  }
+`;
+
+const SUN_HALO_VERTEX_SHADER = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const SUN_HALO_FRAGMENT_SHADER = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    float dist = length(vUv - vec2(0.5)) * 2.0;
+    float innerGlow = exp(-dist * dist * 5.5) * 0.95;
+    float outerGlow = exp(-dist * dist * 1.9) * 0.48;
+    float edgeFade = smoothstep(1.0, 0.35, dist);
+    float alpha = (innerGlow + outerGlow) * edgeFade;
+    vec3 col = mix(vec3(1.0, 0.76, 0.36), vec3(1.0, 0.97, 0.86), clamp(innerGlow, 0.0, 1.0));
+    gl_FragColor = vec4(col, alpha);
   }
 `;
 
@@ -356,24 +379,394 @@ outgoingLight += goldenRim;
   return mat;
 }
 
+const HORIZON_EXT_LENGTH = 290;
+const HORIZON_EXT_STEPS = 58;
+const TURNOUT_T_START = 0.924;
+const TURNOUT_T_RAMP_END = 0.942;
+const TURNOUT_T_TAPER_START = 0.986;
+const TURNOUT_T_END = 0.998;
+const TURNOUT_WIDTH = 7.4;
+
+const WORLD_UP_AXIS = new THREE.Vector3(0, 1, 0);
+
 /**
- * Builds an extruded road ribbon BufferGeometry along ROAD_SAMPLES.
+ * Extended road sample array appending a 290m vanishing-point valley highway straightaway
+ * beyond t = 1.0 so the two-lane asphalt road visibly leads directly toward the sunset sun.
+ */
+const {
+  VISUAL_ROAD_SAMPLES,
+  VISUAL_TOTAL_LENGTH,
+  OVERLOOK_END_FORWARD,
+  OVERLOOK_SUN_DIRECTION,
+} = (() => {
+  const endSample = ROAD_SAMPLES[ROAD_SAMPLES.length - 1];
+  const endForward = endSample.tangent.clone().setY(0).normalize();
+
+  const extPoints: THREE.Vector3[] = [];
+  for (let i = 1; i <= HORIZON_EXT_STEPS; i++) {
+    const u = i / HORIZON_EXT_STEPS;
+    const dist = u * HORIZON_EXT_LENGTH;
+    const yDip = -Math.sin(u * Math.PI * 0.86) * 3.1;
+    const yRise = smoothstep(0.42, 1.0, u) * 7.4;
+    const y = endSample.point.y + smoothstep(0, 0.18, u) * (yDip + yRise);
+    extPoints.push(
+      new THREE.Vector3(
+        endSample.point.x + endForward.x * dist,
+        y,
+        endSample.point.z + endForward.z * dist,
+      ),
+    );
+  }
+
+  const samples: SplineSample[] = [...ROAD_SAMPLES];
+  for (let i = 0; i < extPoints.length; i++) {
+    const prev = i === 0 ? endSample.point : extPoints[i - 1];
+    const curr = extPoints[i];
+    const next = i === extPoints.length - 1 ? curr : extPoints[i + 1];
+    const tan = new THREE.Vector3()
+      .subVectors(i === extPoints.length - 1 ? curr : next, prev)
+      .normalize();
+    const right = new THREE.Vector3().crossVectors(tan, WORLD_UP_AXIS).normalize();
+    const up = new THREE.Vector3().crossVectors(right, tan).normalize();
+    const dist = ((i + 1) / HORIZON_EXT_STEPS) * HORIZON_EXT_LENGTH;
+    samples.push({
+      t: 1 + dist / ROAD_TOTAL_LENGTH,
+      point: curr,
+      tangent: tan,
+      right,
+      up,
+    });
+  }
+
+  const sunDir = new THREE.Vector3(endForward.x, 0.092, endForward.z).normalize();
+  return {
+    VISUAL_ROAD_SAMPLES: samples,
+    VISUAL_TOTAL_LENGTH: ROAD_TOTAL_LENGTH + HORIZON_EXT_LENGTH,
+    OVERLOOK_END_FORWARD: endForward.clone(),
+    OVERLOOK_SUN_DIRECTION: sunDir,
+  };
+})();
+
+function sampleVisualRoadAt(t: number): SplineSample {
+  const maxT = VISUAL_ROAD_SAMPLES[VISUAL_ROAD_SAMPLES.length - 1].t;
+  const clamped = THREE.MathUtils.clamp(t, 0, maxT);
+  if (clamped <= 1) {
+    const f = clamped * (ROAD_SAMPLES.length - 1);
+    const i0 = Math.min(ROAD_SAMPLES.length - 2, Math.floor(f));
+    const alpha = f - i0;
+    const s0 = ROAD_SAMPLES[i0];
+    const s1 = ROAD_SAMPLES[i0 + 1];
+    const point = s0.point.clone().lerp(s1.point, alpha);
+    const tangent = s0.tangent.clone().lerp(s1.tangent, alpha).normalize();
+    const right = new THREE.Vector3().crossVectors(tangent, WORLD_UP_AXIS).normalize();
+    const up = new THREE.Vector3().crossVectors(right, tangent).normalize();
+    return { t: clamped, point, tangent, right, up };
+  }
+
+  const extSpanT = maxT - 1;
+  const u = THREE.MathUtils.clamp((clamped - 1) / Math.max(1e-5, extSpanT), 0, 1);
+  const f = u * HORIZON_EXT_STEPS;
+  const idx0 = ROAD_SAMPLES.length - 1 + Math.min(HORIZON_EXT_STEPS - 1, Math.floor(f));
+  const alpha = f - Math.floor(f);
+  const s0 = VISUAL_ROAD_SAMPLES[idx0];
+  const s1 = VISUAL_ROAD_SAMPLES[idx0 + 1];
+  const point = s0.point.clone().lerp(s1.point, alpha);
+  const tangent = s0.tangent.clone().lerp(s1.tangent, alpha).normalize();
+  const right = new THREE.Vector3().crossVectors(tangent, WORLD_UP_AXIS).normalize();
+  const up = new THREE.Vector3().crossVectors(right, tangent).normalize();
+  return { t: clamped, point, tangent, right, up };
+}
+
+function getTurnoutExtraWidth(t: number): number {
+  if (t <= TURNOUT_T_START || t >= TURNOUT_T_END) return 0;
+  if (t < TURNOUT_T_RAMP_END) {
+    return smoothstep(TURNOUT_T_START, TURNOUT_T_RAMP_END, t) * TURNOUT_WIDTH;
+  }
+  if (t > TURNOUT_T_TAPER_START) {
+    return (1 - smoothstep(TURNOUT_T_TAPER_START, TURNOUT_T_END, t)) * TURNOUT_WIDTH;
+  }
+  return TURNOUT_WIDTH;
+}
+
+function findNearestVisualRoadSample(x: number, z: number): {
+  sample: SplineSample;
+  distSq: number;
+  signedLateral: number;
+} {
+  let bestIndex = 0;
+  let bestDistSq = Infinity;
+  const count = VISUAL_ROAD_SAMPLES.length;
+
+  for (let i = 0; i < count; i += 4) {
+    const p = VISUAL_ROAD_SAMPLES[i].point;
+    const dx = x - p.x;
+    const dz = z - p.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestDistSq) {
+      bestDistSq = d2;
+      bestIndex = i;
+    }
+  }
+
+  const start = Math.max(0, bestIndex - 4);
+  const end = Math.min(count - 1, bestIndex + 4);
+  for (let i = start; i <= end; i++) {
+    const p = VISUAL_ROAD_SAMPLES[i].point;
+    const dx = x - p.x;
+    const dz = z - p.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestDistSq) {
+      bestDistSq = d2;
+      bestIndex = i;
+    }
+  }
+
+  const sample = VISUAL_ROAD_SAMPLES[bestIndex];
+  const dx = x - sample.point.x;
+  const dz = z - sample.point.z;
+  const signedLateral = dx * sample.right.x + dz * sample.right.z;
+
+  return { sample, distSq: bestDistSq, signedLateral };
+}
+
+function getSceneTerrainHeight(
+  x: number,
+  z: number,
+  nearest?: ReturnType<typeof findNearestVisualRoadSample>,
+): number {
+  const { sample, distSq, signedLateral } = nearest ?? findNearestVisualRoadSample(x, z);
+  if (sample.t <= 0.905) {
+    return getTerrainHeight(x, z);
+  }
+
+  const dist = Math.sqrt(distSq);
+
+  // Rolling stylized valley walls flanking the mountain overlook & horizon straightaway
+  const rollingHills =
+    Math.sin(x * 0.032 + z * 0.018) * 3.6 +
+    Math.cos(x * 0.019 - z * 0.025) * 4.4 +
+    Math.sin(x * 0.065 + z * 0.052) * 1.25;
+
+  const turnoutExtra = getTurnoutExtraWidth(sample.t);
+  const rightSideDist = signedLateral > 0 ? Math.max(0, signedLateral - turnoutExtra) : dist;
+  const effectiveDist = signedLateral > 0 ? rightSideDist : dist;
+
+  // Frame the distant horizon highway smoothly with valley ridges while dropping the cliff right of the turnout
+  const valleyWall = Math.max(0, effectiveDist - 18) * 0.25;
+  const ridgeSwell =
+    Math.sin(x * 0.011 + 1.1) *
+    Math.cos(z * 0.013) *
+    Math.min(20, Math.max(0, effectiveDist - 24) * 0.34);
+
+  // Cliff drop right outside the overlook turnout guardrail
+  const turnoutWindow =
+    smoothstep(TURNOUT_T_START - 0.015, TURNOUT_T_RAMP_END, sample.t) *
+    (1 - smoothstep(TURNOUT_T_TAPER_START, TURNOUT_T_END + 0.035, sample.t));
+  const cliffMask =
+    signedLateral > ROAD_HALF_WIDTH + turnoutExtra - 0.4
+      ? smoothstep(
+          ROAD_HALF_WIDTH + turnoutExtra - 0.4,
+          ROAD_HALF_WIDTH + turnoutExtra + 9.5,
+          signedLateral,
+        ) * turnoutWindow
+      : 0;
+  const cliffDrop = cliffMask * -14.5;
+
+  const rawHillHeight = sample.point.y + rollingHills + valleyWall + ridgeSwell + cliffDrop;
+
+  // Flatten highway corridor cleanly + right-side concrete pull-off bench
+  const flatHalf =
+    signedLateral > 0 && turnoutExtra > 0
+      ? ROAD_HALF_WIDTH + turnoutExtra + 0.55
+      : ROAD_HALF_WIDTH + SHOULDER_WIDTH;
+  const blendOuter = flatHalf + (cliffMask > 0.01 ? 8.5 : 14.5);
+  const corridorDist = signedLateral > 0 ? signedLateral : -signedLateral;
+  const roadBlend = smoothstep(flatHalf, blendOuter, corridorDist);
+  const roadBedY = sample.point.y - (turnoutExtra > 0 && signedLateral > ROAD_HALF_WIDTH ? 0.14 : 0.08);
+
+  return THREE.MathUtils.lerp(roadBedY, rawHillHeight, roadBlend);
+}
+
+/**
+ * Generates a warm architectural concrete/stone CanvasTexture with subtle slab joints
+ * for the Destination Overlook scenic pull-off apron.
+ */
+function createConcreteTurnoutTexture(): THREE.CanvasTexture {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#9e958b';
+  ctx.fillRect(0, 0, size, size);
+
+  let seed = 7331;
+  const rand = () => {
+    seed = (seed * 16807) % 2147483647;
+    return (seed - 1) / 2147483646;
+  };
+
+  for (let i = 0; i < 6500; i++) {
+    const x = rand() * size;
+    const y = rand() * size;
+    const v = Math.floor(136 + rand() * 38);
+    ctx.fillStyle = `rgba(${v + 4}, ${v}, ${v - 6}, 0.34)`;
+    ctx.fillRect(x, y, 2, 2);
+  }
+
+  // Subtle architectural expansion joint lines
+  ctx.strokeStyle = 'rgba(72, 66, 60, 0.42)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(1, 1, size - 2, size - 2);
+  ctx.beginPath();
+  ctx.moveTo(0, size * 0.5);
+  ctx.lineTo(size, size * 0.5);
+  ctx.moveTo(size * 0.5, 0);
+  ctx.lineTo(size * 0.5, size);
+  ctx.stroke();
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(3, 12);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  return tex;
+}
+
+/**
+ * Builds the 3D concrete/stone pull-off deck and cliff retaining wall on the right
+ * side of the highway at 92%–100% of the spline.
+ */
+function buildTurnoutDeckGeometry(): THREE.BufferGeometry {
+  const steps = 64;
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+
+  const innerLat = ROAD_HALF_WIDTH - 0.08;
+  const skirtDepth = 2.6;
+
+  // Each step emits 3 vertices: inner edge, outer top edge, outer cliff bottom
+  for (let i = 0; i <= steps; i++) {
+    const u = i / steps;
+    const t = THREE.MathUtils.lerp(TURNOUT_T_START, TURNOUT_T_END, u);
+    const { point, right } = sampleVisualRoadAt(t);
+    const extraW = getTurnoutExtraWidth(t);
+    const outerLat = ROAD_HALF_WIDTH + Math.max(0.05, extraW);
+
+    const ix = point.x + right.x * innerLat;
+    const iy = point.y + 0.028;
+    const iz = point.z + right.z * innerLat;
+
+    const ox = point.x + right.x * outerLat;
+    const oy = point.y + 0.028;
+    const oz = point.z + right.z * outerLat;
+
+    positions.push(ix, iy, iz);
+    positions.push(ox, oy, oz);
+    positions.push(ox, oy - skirtDepth, oz);
+
+    const uvW = extraW / TURNOUT_WIDTH;
+    uvs.push(0, u);
+    uvs.push(uvW, u);
+    uvs.push(uvW, u + 0.15);
+
+    if (i < steps) {
+      const a = i * 3;
+      const b = a + 1;
+      const c = a + 2;
+      const d = a + 3;
+      const e = a + 4;
+      const f = a + 5;
+      // Top concrete deck surface (+Y normal)
+      indices.push(a, b, d, b, e, d);
+      // Outer cliff retaining wall
+      indices.push(b, c, e, c, f, e);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Builds a 4-sided solid rectangular rail geometry tracing a polyline at height `yOffset`
+ * above the roadbed, used for the Overlook timber top rail and steel lower rail.
+ */
+function buildBoxBeamAlongPoints(
+  points: THREE.Vector3[],
+  yOffset: number,
+  halfWidth: number,
+  halfHeight: number,
+): THREE.BufferGeometry {
+  const count = points.length;
+  const positions: number[] = [];
+  const indices: number[] = [];
+  const forward = new THREE.Vector3();
+  const outward = new THREE.Vector3();
+
+  for (let i = 0; i < count; i++) {
+    const prev = points[Math.max(0, i - 1)];
+    const next = points[Math.min(count - 1, i + 1)];
+    forward.subVectors(next, prev).setY(0).normalize();
+    outward.set(-forward.z, 0, forward.x).normalize();
+
+    const p = points[i];
+    const cy = p.y + yOffset;
+    // 4 corners around cross-section: bottom-in, bottom-out, top-out, top-in
+    positions.push(
+      p.x - outward.x * halfWidth, cy - halfHeight, p.z - outward.z * halfWidth,
+      p.x + outward.x * halfWidth, cy - halfHeight, p.z + outward.z * halfWidth,
+      p.x + outward.x * halfWidth, cy + halfHeight, p.z + outward.z * halfWidth,
+      p.x - outward.x * halfWidth, cy + halfHeight, p.z - outward.z * halfWidth,
+    );
+
+    if (i < count - 1) {
+      const a = i * 4;
+      const b = (i + 1) * 4;
+      for (let side = 0; side < 4; side++) {
+        const sNext = (side + 1) % 4;
+        indices.push(a + side, b + side, a + sNext, a + sNext, b + side, b + sNext);
+      }
+    }
+  }
+
+  // End caps
+  indices.push(0, 1, 2, 0, 2, 3);
+  const last = (count - 1) * 4;
+  indices.push(last, last + 2, last + 1, last, last + 3, last + 2);
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  return geo.toNonIndexed();
+}
+
+/**
+ * Builds an extruded road ribbon BufferGeometry along VISUAL_ROAD_SAMPLES.
  */
 function buildRoadRibbonGeometry(
   width: number,
   yOffset: number,
   uvTileY = 1,
 ): THREE.BufferGeometry {
-  const count = ROAD_SAMPLES.length;
+  const count = VISUAL_ROAD_SAMPLES.length;
   const positions = new Float32Array(count * 2 * 3);
   const normals = new Float32Array(count * 2 * 3);
   const uvs = new Float32Array(count * 2 * 2);
   const indices: number[] = [];
 
   const half = width * 0.5;
+  const uvScale = VISUAL_TOTAL_LENGTH / ROAD_TOTAL_LENGTH;
 
   for (let i = 0; i < count; i++) {
-    const { point, right, up, t } = ROAD_SAMPLES[i];
+    const { point, right, up, t } = VISUAL_ROAD_SAMPLES[i];
     const lx = point.x - right.x * half;
     const ly = point.y - right.y * half + yOffset;
     const lz = point.z - right.z * half;
@@ -399,9 +792,9 @@ function buildRoadRibbonGeometry(
 
     const uvBase = i * 4;
     uvs[uvBase] = 0;
-    uvs[uvBase + 1] = t * uvTileY;
+    uvs[uvBase + 1] = t * uvTileY * uvScale;
     uvs[uvBase + 2] = 1;
-    uvs[uvBase + 3] = t * uvTileY;
+    uvs[uvBase + 3] = t * uvTileY * uvScale;
 
     if (i < count - 1) {
       const a = i * 2;
@@ -490,22 +883,22 @@ interface ClutterPlacement {
 }
 
 /**
- * Builds vertex-colored rolling countryside terrain geometry at mount time:
- * - Dusty gravel shoulder within 2m of the road edge
- * - Darker pine-needle / humus soil within 3m of tree trunks
- * - Warm golden grass across elevated hills
+ * Builds vertex-colored rolling countryside & sunset valley terrain geometry at mount time:
+ * - Warm dusty sandstone gravel shoulder near road edge
+ * - Darker pine-needle / humus soil under early-route trees
+ * - Warm olive-brown, dusty terracotta, and burnt sienna faceted hills framing the valley
  */
 function buildTerrainGeometry(trees: TreePlacement[]): THREE.BufferGeometry {
-  const widthX = 360;
-  const minZ = Math.floor(OVERLOOK_CENTER.z - 165);
+  const widthX = 420;
+  const minZ = Math.floor(OVERLOOK_CENTER.z - 360);
   const maxZ = 65;
   const depthZ = maxZ - minZ;
-  const segX = 136;
-  const segZ = 216;
+  const segX = 148;
+  const segZ = 256;
 
   const geo = new THREE.PlaneGeometry(widthX, depthZ, segX, segZ);
   geo.rotateX(-Math.PI / 2);
-  geo.translate(-6, 0, (minZ + maxZ) * 0.5);
+  geo.translate(-22, 0, (minZ + maxZ) * 0.5);
 
   // Build spatial hash grid (6m cells) for O(1) tree-trunk proximity lookup
   const cellSize = 6.0;
@@ -525,12 +918,13 @@ function buildTerrainGeometry(trees: TreePlacement[]): THREE.BufferGeometry {
   const pos = geo.attributes.position as THREE.BufferAttribute;
   const colors = new Float32Array(pos.count * 3);
 
-  const valleyOlive = new THREE.Color('#4d6433');
-  const warmGoldenGrass = new THREE.Color('#bc9543');
-  const sunlitMeadow = new THREE.Color('#8e7f3c');
-  const dustyGravel = new THREE.Color('#7f6f58');
+  const valleyOlive = new THREE.Color('#535c31');
+  const oliveBrown = new THREE.Color('#5b4c2d');
+  const warmGoldenGrass = new THREE.Color('#ad7e3c');
+  const dustyTerracotta = new THREE.Color('#8d5235');
+  const burntSienna = new THREE.Color('#6c3923');
+  const dustyGravel = new THREE.Color('#7c6b54');
   const pineNeedleSoil = new THREE.Color('#272b1b');
-  const duskRidge = new THREE.Color('#404148');
   const tmpColor = new THREE.Color();
 
   const treeMaxRadiusSq = 3.2 * 3.2;
@@ -538,22 +932,28 @@ function buildTerrainGeometry(trees: TreePlacement[]): THREE.BufferGeometry {
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i);
     const z = pos.getZ(i);
-    const nearest = findNearestRoadSample(x, z);
-    const y = getTerrainHeight(x, z, nearest);
+    const nearest = findNearestVisualRoadSample(x, z);
+    const y = getSceneTerrainHeight(x, z, nearest);
     pos.setY(i, y);
 
-    const { sample, distSq } = nearest;
+    const { sample, distSq, signedLateral } = nearest;
     const dist = Math.sqrt(distSq);
-    const roadEdgeDist = Math.max(0, dist - ROAD_HALF_WIDTH);
+    const turnoutExtra = getTurnoutExtraWidth(sample.t);
+    const roadEdgeDist =
+      signedLateral > 0 && turnoutExtra > 0
+        ? Math.max(0, signedLateral - (ROAD_HALF_WIDTH + turnoutExtra))
+        : Math.max(0, dist - ROAD_HALF_WIDTH);
     const relElev = y - sample.point.y;
 
-    // 1. Base valley olive blended with warm golden grass on higher hills & sun-facing patches
+    // 1. Base valley olive transitioning smoothly into olive-brown, warm ochre & burnt sienna toward the overlook valley
     const sunPatch =
       0.5 + 0.5 * Math.sin(x * 0.045 + z * 0.03) * Math.cos(x * 0.02 - z * 0.04);
-    const hillFactor = smoothstep(0.6, 11.5, relElev);
+    const hillFactor = smoothstep(0.5, 12.0, relElev);
+    const valleyTransition = smoothstep(0.76, 0.94, sample.t);
 
-    tmpColor.copy(valleyOlive).lerp(sunlitMeadow, sunPatch * 0.55);
-    tmpColor.lerp(warmGoldenGrass, hillFactor * 0.78);
+    tmpColor.copy(valleyOlive).lerp(oliveBrown, valleyTransition * 0.85);
+    tmpColor.lerp(warmGoldenGrass, sunPatch * 0.45 + hillFactor * 0.48);
+    tmpColor.lerp(dustyTerracotta, hillFactor * valleyTransition * 0.65);
 
     // 2. Darker pine-needle / forest-floor soil within 3m of any tree trunk
     const gcx = Math.floor(x / cellSize);
@@ -580,17 +980,20 @@ function buildTerrainGeometry(trees: TreePlacement[]): THREE.BufferGeometry {
       tmpColor.lerp(pineNeedleSoil, needleBlend * 0.85);
     }
 
-    // 3. Dusty gravel shoulder within 2m of road edge (feathered smoothly out to 3.6m)
+    // 3. Dusty gravel shoulder near road edge
     if (roadEdgeDist < 3.6) {
-      const gravelBlend = 1 - smoothstep(1.8, 3.6, roadEdgeDist);
-      tmpColor.lerp(dustyGravel, gravelBlend * 0.9);
+      const gravelBlend = 1 - smoothstep(1.6, 3.6, roadEdgeDist);
+      tmpColor.lerp(dustyGravel, gravelBlend * 0.88);
     }
 
-    // 4. Cool dusk tint on distant perimeter mountain flanks
-    const duskZCutoff = OVERLOOK_CENTER.z - 40;
-    if (dist > 75 || z < duskZCutoff) {
-      const ridgeBlend = THREE.MathUtils.clamp(Math.max(dist - 75, duskZCutoff - z) / 65, 0, 0.75);
-      tmpColor.lerp(duskRidge, ridgeBlend);
+    // 4. Warm burnt sienna & terracotta tint on distant overlook valley hillsides
+    if (dist > 60 || sample.t > 0.95) {
+      const ridgeBlend = THREE.MathUtils.clamp(
+        Math.max((dist - 60) / 70, (sample.t - 0.95) * 1.4),
+        0,
+        0.72,
+      );
+      tmpColor.lerp(burntSienna, ridgeBlend * 0.65);
     }
 
     colors[i * 3] = tmpColor.r;
@@ -604,73 +1007,122 @@ function buildTerrainGeometry(trees: TreePlacement[]): THREE.BufferGeometry {
 }
 
 /**
- * Builds distant stylized mountain silhouette rings framing the sunset horizon.
+ * Builds layered 3D faceted low-poly mountain ridges in warm burnt sienna, dusty terracotta,
+ * and muted olive-brown tones with a crisp V-shaped saddle framing the sunset sun ahead.
  */
 function buildMountainRidgeGeometry(): THREE.BufferGeometry {
-  const ridgeArcCount = 130;
+  const ridgeArcCount = 112;
   const positions: number[] = [];
   const colors: number[] = [];
   const indices: number[] = [];
 
+  const sunAngle = Math.atan2(OVERLOOK_END_FORWARD.z, OVERLOOK_END_FORWARD.x);
+
   const layers = [
     {
-      radius: 460,
-      baseY: -10,
-      peakAmp: 66,
-      zCenter: OVERLOOK_CENTER.z + 230,
-      color: new THREE.Color('#3b3344'),
+      radius: 365,
+      depthSpan: 55,
+      baseY: OVERLOOK_CENTER.y - 24,
+      saddleFloor: 10,
+      peakAmp: 62,
+      saddleWidth: 0.24,
+      lowColor: new THREE.Color('#5a482c'),
+      midColor: new THREE.Color('#7e4b2e'),
+      peakColor: new THREE.Color('#9a5f3b'),
     },
     {
-      radius: 560,
-      baseY: -14,
+      radius: 540,
+      depthSpan: 72,
+      baseY: OVERLOOK_CENTER.y - 28,
+      saddleFloor: 48,
       peakAmp: 98,
-      zCenter: OVERLOOK_CENTER.z + 180,
-      color: new THREE.Color('#2c283b'),
+      saddleWidth: 0.16,
+      lowColor: new THREE.Color('#663c27'),
+      midColor: new THREE.Color('#8e4e2f'),
+      peakColor: new THREE.Color('#b46b42'),
+    },
+    {
+      radius: 695,
+      depthSpan: 80,
+      baseY: OVERLOOK_CENTER.y - 26,
+      saddleFloor: 38,
+      peakAmp: 128,
+      saddleWidth: 0.21,
+      lowColor: new THREE.Color('#7c4d32'),
+      midColor: new THREE.Color('#a4633c'),
+      peakColor: new THREE.Color('#c8824e'),
     },
   ];
 
   let vertexOffset = 0;
 
   layers.forEach((layer, layerIdx) => {
+    const cols = ridgeArcCount + 1;
+    // 3 rows per mountain band: front foothill skirt -> jagged faceted mid spur -> main ridge crest
     for (let i = 0; i <= ridgeArcCount; i++) {
-      const angle = THREE.MathUtils.lerp(-Math.PI * 0.96, -Math.PI * 0.04, i / ridgeArcCount);
-      const x = Math.cos(angle) * layer.radius;
-      const z = layer.zCenter + Math.sin(angle) * layer.radius * 0.85;
+      const frac = i / ridgeArcCount;
+      const angOffset = THREE.MathUtils.lerp(-Math.PI * 0.48, Math.PI * 0.48, frac);
+      const angle = sunAngle + angOffset;
+      const absDiff = Math.abs(angOffset);
+
+      // Sharp V-shaped saddle centered directly on the Overlook road & sun direction
+      const vSaddle = smoothstep(0.015, layer.saddleWidth, absDiff);
+      const flankBoost = smoothstep(layer.saddleWidth * 0.65, 0.44, absDiff);
 
       const harmonic =
-        Math.abs(Math.sin(i * 0.24 + layerIdx * 1.7)) * 0.55 +
-        Math.abs(Math.cos(i * 0.53 + layerIdx * 0.9)) * 0.3 +
-        Math.abs(Math.sin(i * 1.15)) * 0.15;
+        Math.abs(Math.sin(i * 0.37 + layerIdx * 1.9)) * 0.52 +
+        Math.abs(Math.cos(i * 0.71 + layerIdx * 1.1)) * 0.31 +
+        Math.abs(Math.sin(i * 1.35 + layerIdx * 0.5)) * 0.17;
 
-      const peakY = layer.baseY + harmonic * layer.peakAmp;
+      const spurJitter = (i % 2 === 0 ? 1 : -1) * 0.016;
+      const rFront = layer.radius - layer.depthSpan * (0.65 + (i % 2) * 0.28);
+      const rMid = layer.radius - layer.depthSpan * (0.28 - (i % 2) * 0.14);
+      const rPeak = layer.radius + (i % 2 === 0 ? 10 : -8);
 
-      positions.push(x, layer.baseY - 35, z);
-      positions.push(x, peakY, z);
+      const peakY =
+        layer.baseY +
+        layer.saddleFloor * (0.55 + 0.45 * harmonic) +
+        (vSaddle * 0.7 + flankBoost * 0.55) * harmonic * layer.peakAmp;
+      const midY = THREE.MathUtils.lerp(layer.baseY + 8, peakY, 0.52 + (i % 2) * 0.14);
+      const frontY = layer.baseY - 12;
 
-      colors.push(layer.color.r * 0.7, layer.color.g * 0.7, layer.color.b * 0.85);
-      colors.push(
-        Math.min(1, layer.color.r * 1.35 + 0.1),
-        Math.min(1, layer.color.g * 1.15 + 0.06),
-        layer.color.b * 1.05,
-      );
+      const cosA = Math.cos(angle);
+      const sinA = Math.sin(angle);
+      const cosM = Math.cos(angle + spurJitter);
+      const sinM = Math.sin(angle + spurJitter);
+
+      // Row 0: Front skirt
+      positions.push(OVERLOOK_CENTER.x + cosA * rFront, frontY, OVERLOOK_CENTER.z + sinA * rFront);
+      colors.push(layer.lowColor.r, layer.lowColor.g, layer.lowColor.b);
+
+      // Row 1: Mid faceted spur
+      positions.push(OVERLOOK_CENTER.x + cosM * rMid, midY, OVERLOOK_CENTER.z + sinM * rMid);
+      colors.push(layer.midColor.r, layer.midColor.g, layer.midColor.b);
+
+      // Row 2: Main crest
+      positions.push(OVERLOOK_CENTER.x + cosA * rPeak, peakY, OVERLOOK_CENTER.z + sinA * rPeak);
+      colors.push(layer.peakColor.r, layer.peakColor.g, layer.peakColor.b);
 
       if (i < ridgeArcCount) {
-        const a = vertexOffset + i * 2;
-        const b = a + 1;
-        const c = a + 2;
-        const d = a + 3;
-        indices.push(a, b, c, b, d, c);
+        const c0 = vertexOffset + i * 3;
+        const c1 = vertexOffset + (i + 1) * 3;
+        // Front slope facets (outward +Y / toward viewer)
+        indices.push(c0, c1, c0 + 1, c0 + 1, c1, c1 + 1);
+        // Upper ridge facets
+        indices.push(c0 + 1, c1 + 1, c0 + 2, c0 + 2, c1 + 1, c1 + 2);
       }
     }
-    vertexOffset += (ridgeArcCount + 1) * 2;
+    vertexOffset += cols * 3;
   });
 
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  geo.setIndex(indices);
-  geo.computeVertexNormals();
-  return geo;
+  const indexed = new THREE.BufferGeometry();
+  indexed.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  indexed.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  indexed.setIndex(indices);
+  const faceted = indexed.toNonIndexed();
+  indexed.dispose();
+  faceted.computeVertexNormals();
+  return faceted;
 }
 
 /**
@@ -1079,7 +1531,7 @@ const FoliageChunk = React.memo(function FoliageChunk({
 export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
   const skyUniforms = useMemo(
     () => ({
-      uSunDirection: { value: SUN_DIRECTION.clone() },
+      uSunDirection: { value: OVERLOOK_SUN_DIRECTION.clone() },
     }),
     [],
   );
@@ -1108,7 +1560,64 @@ export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
     timeUniform.value = reducedMotionRef.current ? 0 : clock.elapsedTime;
   });
 
-  const asphaltTextures = useMemo(() => createAsphaltTextures(), []);
+  const asphaltTextures = useMemo(() => {
+    const res = createAsphaltTextures();
+    const scale = VISUAL_TOTAL_LENGTH / ROAD_TOTAL_LENGTH;
+    res.map.repeat.set(1, 76 * scale);
+    res.roughnessMap.repeat.set(1, 76 * scale);
+    return res;
+  }, []);
+  const concreteTexture = useMemo(() => createConcreteTurnoutTexture(), []);
+  const turnoutDeckGeo = useMemo(() => buildTurnoutDeckGeometry(), []);
+  const { turnoutTopRailGeo, turnoutLowerRailGeo, turnoutPosts } = useMemo(() => {
+    const sampleCount = 46;
+    const railPts: THREE.Vector3[] = [];
+    for (let i = 0; i <= sampleCount; i++) {
+      const u = i / sampleCount;
+      const t = THREE.MathUtils.lerp(TURNOUT_T_START + 0.002, TURNOUT_T_END - 0.002, u);
+      const { point, right } = sampleVisualRoadAt(t);
+      const outerLat = ROAD_HALF_WIDTH + Math.max(0.2, getTurnoutExtraWidth(t)) - 0.28;
+      railPts.push(
+        new THREE.Vector3(
+          point.x + right.x * outerLat,
+          point.y + 0.028,
+          point.z + right.z * outerLat,
+        ),
+      );
+    }
+
+    const topRail = buildBoxBeamAlongPoints(railPts, 0.78, 0.058, 0.062);
+    const lowerRail = buildBoxBeamAlongPoints(railPts, 0.44, 0.044, 0.048);
+
+    // Space timber-and-steel guardrail posts evenly along the turnout cliff perimeter
+    const posts: { pos: [number, number, number]; rotY: number }[] = [];
+    const postSpacing = 2.4;
+    let accumDist = 0;
+    let nextPostDist = 0;
+    for (let i = 0; i < railPts.length; i++) {
+      if (i > 0) {
+        accumDist += railPts[i].distanceTo(railPts[i - 1]);
+      }
+      if (accumDist >= nextPostDist || i === railPts.length - 1) {
+        const p = railPts[i];
+        const prev = railPts[Math.max(0, i - 1)];
+        const next = railPts[Math.min(railPts.length - 1, i + 1)];
+        const dirX = next.x - prev.x;
+        const dirZ = next.z - prev.z;
+        posts.push({
+          pos: [p.x, p.y + 0.44, p.z],
+          rotY: Math.atan2(dirX, dirZ),
+        });
+        nextPostDist = accumDist + postSpacing;
+      }
+    }
+
+    return {
+      turnoutTopRailGeo: topRail,
+      turnoutLowerRailGeo: lowerRail,
+      turnoutPosts: posts,
+    };
+  }, []);
   const contactShadowTexture = useMemo(() => createContactShadowTexture(), []);
   const contactShadowGeo = useMemo(() => {
     const geo = new THREE.PlaneGeometry(1, 1);
@@ -1200,12 +1709,12 @@ export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
   const roadGeo = useMemo(() => buildRoadRibbonGeometry(ROAD_WIDTH, 0.02, 1), []);
   const shoulderGeo = useMemo(() => buildRoadRibbonGeometry(ROAD_WIDTH + 3.1, -0.025, 1), []);
   const leftFogLineGeo = useMemo(() => {
-    const count = ROAD_SAMPLES.length;
+    const count = VISUAL_ROAD_SAMPLES.length;
     const geo = buildRoadRibbonGeometry(0.14, 0.035, 1);
     const pos = geo.attributes.position as THREE.BufferAttribute;
     const offset = -(ROAD_HALF_WIDTH - 0.36);
     for (let i = 0; i < count; i++) {
-      const { right } = ROAD_SAMPLES[i];
+      const { right } = VISUAL_ROAD_SAMPLES[i];
       pos.setX(i * 2, pos.getX(i * 2) + right.x * offset);
       pos.setZ(i * 2, pos.getZ(i * 2) + right.z * offset);
       pos.setX(i * 2 + 1, pos.getX(i * 2 + 1) + right.x * offset);
@@ -1216,12 +1725,12 @@ export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
   }, []);
 
   const rightFogLineGeo = useMemo(() => {
-    const count = ROAD_SAMPLES.length;
+    const count = VISUAL_ROAD_SAMPLES.length;
     const geo = buildRoadRibbonGeometry(0.14, 0.035, 1);
     const pos = geo.attributes.position as THREE.BufferAttribute;
     const offset = ROAD_HALF_WIDTH - 0.36;
     for (let i = 0; i < count; i++) {
-      const { right } = ROAD_SAMPLES[i];
+      const { right } = VISUAL_ROAD_SAMPLES[i];
       pos.setX(i * 2, pos.getX(i * 2) + right.x * offset);
       pos.setZ(i * 2, pos.getZ(i * 2) + right.z * offset);
       pos.setX(i * 2 + 1, pos.getX(i * 2 + 1) + right.x * offset);
@@ -1273,10 +1782,10 @@ export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
       return spans;
     };
 
-    return [...buildSideSpans(1, 0.08, 0.91), ...buildSideSpans(-1, 0.16, 0.91)];
+    return [...buildSideSpans(1, 0.08, 0.915), ...buildSideSpans(-1, 0.16, 0.915)];
   }, []);
 
-  const dashCount = Math.floor(ROAD_TOTAL_LENGTH / 7.2);
+  const dashCount = Math.floor(VISUAL_TOTAL_LENGTH / 7.2);
   const dashRef = useRef<THREE.InstancedMesh>(null);
 
   const guardrailPostData = useMemo(() => {
@@ -1337,7 +1846,9 @@ export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
       const { distSq } = findNearestRoadSample(x, z);
       if (Math.sqrt(distSq) < minRoadDist) return false;
 
-      if (Math.hypot(x - OVERLOOK_CENTER.x, z - OVERLOOK_CENTER.z) < OVERLOOK_RADIUS + 4.5) {
+      // Keep the summit Destination Overlook vista & sunset mountain valley unobstructed
+      if (z < OVERLOOK_CENTER.z + 55) return false;
+      if (Math.hypot(x - OVERLOOK_CENTER.x, z - OVERLOOK_CENTER.z) < OVERLOOK_RADIUS + 26) {
         return false;
       }
 
@@ -1358,7 +1869,7 @@ export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
     let attempts = 0;
     while (pineList.length < 430 && attempts < 3600) {
       attempts++;
-      const t = rand() * 0.95;
+      const t = rand() * 0.885;
       const { point, right } = getRoadFrameAt(t);
       const side = rand() > 0.5 ? 1 : -1;
       const lateral = 13.5 + Math.pow(rand(), 1.25) * 95;
@@ -1386,7 +1897,7 @@ export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
     attempts = 0;
     while (oakList.length < 210 && attempts < 2400) {
       attempts++;
-      const t = rand() * 0.92;
+      const t = rand() * 0.875;
       const { point, right } = getRoadFrameAt(t);
       const side = rand() > 0.5 ? 1 : -1;
       const lateral = 13.0 + Math.pow(rand(), 1.4) * 72;
@@ -1467,7 +1978,7 @@ export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
     attempts = 0;
     while (boulderList.length < 190 && attempts < 1900) {
       attempts++;
-      const t = 0.04 + rand() * 0.94;
+      const t = 0.04 + rand() * 0.87;
       const { point, right } = getRoadFrameAt(t);
       const side = rand() > 0.5 ? 1 : -1;
       const lateral = ROAD_HALF_WIDTH + 3.2 + rand() * 26;
@@ -1487,7 +1998,7 @@ export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
     attempts = 0;
     while (grassList.length < 560 && attempts < 3000) {
       attempts++;
-      const t = 0.02 + rand() * 0.93;
+      const t = 0.02 + rand() * 0.87;
       const { point, right } = getRoadFrameAt(t);
       const side = rand() > 0.5 ? 1 : -1;
       const lateral = ROAD_HALF_WIDTH + 2.2 + rand() * 18;
@@ -1633,6 +2144,10 @@ export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
     return () => {
       asphaltTextures.map.dispose();
       asphaltTextures.roughnessMap.dispose();
+      concreteTexture.dispose();
+      turnoutDeckGeo.dispose();
+      turnoutTopRailGeo.dispose();
+      turnoutLowerRailGeo.dispose();
       contactShadowTexture.dispose();
       contactShadowGeo.dispose();
       terrainGeo.dispose();
@@ -1668,6 +2183,7 @@ export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
     boulderGeo,
     boulderMat,
     bushMat,
+    concreteTexture,
     contactShadowGeo,
     contactShadowMat,
     contactShadowTexture,
@@ -1694,24 +2210,22 @@ export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
     rootRockMat,
     shoulderGeo,
     terrainGeo,
+    turnoutDeckGeo,
+    turnoutLowerRailGeo,
+    turnoutTopRailGeo,
   ]);
 
   // Populate road dashes & guardrail posts once at mount
   useEffect(() => {
     const dummy = new THREE.Object3D();
+    const maxVisualT = VISUAL_ROAD_SAMPLES[VISUAL_ROAD_SAMPLES.length - 1].t;
 
-    // 1. Dashed center markings
+    // 1. Crisp white dashed center markings along highway & horizon extension
     if (dashRef.current) {
       const lookTarget = new THREE.Vector3();
       for (let i = 0; i < dashCount; i++) {
-        const t = (i + 0.5) / dashCount;
-        if (t > OVERLOOK_T - 0.015) {
-          dummy.scale.set(0, 0, 0);
-          dummy.updateMatrix();
-          dashRef.current.setMatrixAt(i, dummy.matrix);
-          continue;
-        }
-        const { point, tangent } = getRoadFrameAt(t);
+        const t = ((i + 0.5) / dashCount) * maxVisualT;
+        const { point, tangent } = sampleVisualRoadAt(t);
         dummy.position.set(point.x, point.y + 0.036, point.z);
         lookTarget.copy(point).add(tangent);
         dummy.lookAt(lookTarget.x, lookTarget.y + 0.036, lookTarget.z);
@@ -1740,34 +2254,21 @@ export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
     }
   }, [dashCount, guardrailPostData]);
 
-  const overlookYaw = useMemo(
-    () => Math.atan2(OVERLOOK_TANGENT.x, OVERLOOK_TANGENT.z),
-    [],
-  );
-
-  // Crescent perimeter bollards facing the sunset valley at the Destination Overlook
-  const overlookBollards = useMemo(() => {
-    const forward = OVERLOOK_TANGENT.clone().setY(0).normalize();
-    const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
-    const posts: [number, number, number][] = [];
-    const count = 13;
-    for (let i = 0; i < count; i++) {
-      const a = THREE.MathUtils.lerp(-Math.PI * 0.44, Math.PI * 0.44, i / (count - 1));
-      const dir = forward
-        .clone()
-        .multiplyScalar(Math.cos(a))
-        .add(right.clone().multiplyScalar(Math.sin(a)));
-      const p = OVERLOOK_CENTER.clone().addScaledVector(dir, OVERLOOK_RADIUS - 1.3);
-      posts.push([p.x, OVERLOOK_CENTER.y, p.z]);
-    }
-    return posts;
+  // Glowing sunset sun position & billboard orientation facing the Overlook
+  const { sunPosition, sunHaloYaw } = useMemo(() => {
+    const pos = OVERLOOK_CENTER.clone().addScaledVector(OVERLOOK_SUN_DIRECTION, 850);
+    const yaw = Math.atan2(-OVERLOOK_SUN_DIRECTION.x, -OVERLOOK_SUN_DIRECTION.z);
+    return {
+      sunPosition: [pos.x, pos.y, pos.z] as [number, number, number],
+      sunHaloYaw: yaw,
+    };
   }, []);
 
   return (
     <group name="countryside-environment">
-      {/* Golden-hour atmospheric sky dome */}
+      {/* Golden-hour atmospheric sky dome (cream-gold horizon -> amber -> burnt orange overhead) */}
       <mesh position={[0, 0, OVERLOOK_CENTER.z * 0.5]} frustumCulled={false}>
-        <sphereGeometry args={[1150, 48, 32]} />
+        <sphereGeometry args={[1250, 48, 32]} />
         <shaderMaterial
           vertexShader={SKY_VERTEX_SHADER}
           fragmentShader={SKY_FRAGMENT_SHADER}
@@ -1778,14 +2279,46 @@ export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
         />
       </mesh>
 
-      {/* Rolling vertex-colored hills (gravel shoulder, dark pine soil, golden grass) */}
+      {/* Large glowing white-gold sun sphere & bloom halo nested in the mountain V-saddle */}
+      <group position={sunPosition}>
+        <mesh frustumCulled={false}>
+          <sphereGeometry args={[62, 48, 32]} />
+          <meshBasicMaterial color="#fffef2" fog={false} />
+        </mesh>
+        <mesh rotation={[0, sunHaloYaw, 0]} frustumCulled={false}>
+          <planeGeometry args={[360, 360]} />
+          <shaderMaterial
+            vertexShader={SUN_HALO_VERTEX_SHADER}
+            fragmentShader={SUN_HALO_FRAGMENT_SHADER}
+            transparent
+            depthWrite={false}
+            blending={THREE.AdditiveBlending}
+            fog={false}
+          />
+        </mesh>
+      </group>
+
+      {/* Faceted low-poly valley terrain & rolling hills */}
       <mesh geometry={terrainGeo} receiveShadow>
-        <meshStandardMaterial vertexColors={true} roughness={0.95} metalness={0.02} />
+        <meshStandardMaterial
+          vertexColors={true}
+          flatShading={true}
+          roughness={0.95}
+          metalness={0.02}
+        />
       </mesh>
 
-      {/* Distant sunset mountain silhouettes */}
+      {/* Layered faceted low-poly mountain ridges in warm burnt sienna & dusty terracotta */}
       <mesh geometry={mountainGeo} frustumCulled={false}>
-        <meshBasicMaterial vertexColors side={THREE.DoubleSide} />
+        <meshStandardMaterial
+          vertexColors={true}
+          flatShading={true}
+          roughness={0.94}
+          metalness={0.02}
+          emissive="#4f2713"
+          emissiveIntensity={0.22}
+          side={THREE.DoubleSide}
+        />
       </mesh>
 
       {/* Gravel shoulder bed */}
@@ -1798,26 +2331,26 @@ export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
         <meshStandardMaterial
           map={asphaltTextures.map}
           roughnessMap={asphaltTextures.roughnessMap}
-          roughness={0.86}
-          metalness={0.08}
+          roughness={0.62}
+          metalness={0.14}
         />
       </mesh>
 
-      {/* White outer fog lines */}
+      {/* Crisp white outer solid edge lines */}
       <mesh geometry={leftFogLineGeo}>
-        <meshStandardMaterial color="#dcd9d0" roughness={0.7} />
+        <meshStandardMaterial color="#eceae2" roughness={0.65} />
       </mesh>
       <mesh geometry={rightFogLineGeo}>
-        <meshStandardMaterial color="#dcd9d0" roughness={0.7} />
+        <meshStandardMaterial color="#eceae2" roughness={0.65} />
       </mesh>
 
-      {/* Dashed amber center lane markings */}
+      {/* Crisp white dashed center lane markings */}
       <instancedMesh ref={dashRef} args={[undefined, undefined, dashCount]} frustumCulled={false}>
         <boxGeometry args={[0.16, 0.015, 2.75]} />
-        <meshStandardMaterial color="#eab308" emissive="#854d0e" emissiveIntensity={0.22} roughness={0.65} />
+        <meshStandardMaterial color="#f2efe8" roughness={0.55} />
       </instancedMesh>
 
-      {/* Reflective steel guardrails */}
+      {/* Reflective highway steel guardrails */}
       {guardrailSpans.map((span, idx) => (
         <mesh key={idx} geometry={span.geo} castShadow receiveShadow>
           <meshStandardMaterial
@@ -1853,55 +2386,50 @@ export const RoadAndTerrain = React.memo(function RoadAndTerrain() {
         />
       </instancedMesh>
 
-      {/* Destination Overlook Scenic Pull-Off Terrace */}
-      <group position={[OVERLOOK_CENTER.x, OVERLOOK_CENTER.y, OVERLOOK_CENTER.z]}>
-        {/* Paved overlook plaza seated flush under the level asphalt surface */}
-        <mesh position={[0, -0.64, 0]} receiveShadow>
-          <cylinderGeometry args={[OVERLOOK_RADIUS, OVERLOOK_RADIUS + 2.4, 1.28, 48]} />
-          <meshStandardMaterial color="#2b2d34" roughness={0.85} metalness={0.1} />
+      {/* Destination Overlook Scenic Pull-Off (92% - 100%): Widened Concrete Deck & Timber/Steel Guardrail */}
+      <group name="overlook-turnout">
+        <mesh geometry={turnoutDeckGeo} receiveShadow>
+          <meshStandardMaterial
+            map={concreteTexture}
+            color="#d6cfc6"
+            roughness={0.86}
+            metalness={0.05}
+          />
         </mesh>
-        {/* Architectural basalt trim ring */}
-        <mesh position={[0, 0.008, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-          <ringGeometry args={[OVERLOOK_RADIUS - 0.55, OVERLOOK_RADIUS, 48]} />
-          <meshStandardMaterial color="#78716c" roughness={0.8} metalness={0.15} />
-        </mesh>
-        {/* Timber & steel architectural viewing bench */}
-        <group position={[-6.5, 0.12, -5.5]} rotation={[0, overlookYaw + 0.5, 0]}>
-          <mesh position={[0, 0.35, 0]} castShadow>
-            <boxGeometry args={[2.6, 0.12, 0.72]} />
-            <meshStandardMaterial color="#7c5338" roughness={0.75} />
-          </mesh>
-          <mesh position={[-1.0, 0.15, 0]} castShadow>
-            <boxGeometry args={[0.14, 0.32, 0.62]} />
-            <meshStandardMaterial color="#27272a" metalness={0.7} roughness={0.35} />
-          </mesh>
-          <mesh position={[1.0, 0.15, 0]} castShadow>
-            <boxGeometry args={[0.14, 0.32, 0.62]} />
-            <meshStandardMaterial color="#27272a" metalness={0.7} roughness={0.35} />
-          </mesh>
-        </group>
-        {/* Warm golden sunset light bathing the overlook */}
-        <pointLight position={[0, 3.8, -4]} color="#ffb35c" intensity={18} distance={34} decay={1.6} />
-      </group>
 
-      {/* Overlook rim architectural bollards */}
-      {overlookBollards.map((pos, idx) => (
-        <group key={idx} position={pos}>
-          <mesh position={[0, 0.45, 0]} castShadow>
-            <cylinderGeometry args={[0.09, 0.11, 0.9, 10]} />
-            <meshStandardMaterial color="#272932" metalness={0.65} roughness={0.38} />
+        {/* Dark timber upper beam */}
+        <mesh geometry={turnoutTopRailGeo} castShadow receiveShadow>
+          <meshStandardMaterial color="#3c2f26" roughness={0.82} metalness={0.08} />
+        </mesh>
+
+        {/* Dark charcoal steel lower beam */}
+        <mesh geometry={turnoutLowerRailGeo} castShadow receiveShadow>
+          <meshStandardMaterial color="#272a32" roughness={0.44} metalness={0.68} />
+        </mesh>
+
+        {/* Timber-and-steel guardrail posts along cliff edge */}
+        {turnoutPosts.map((post, idx) => (
+          <mesh
+            key={idx}
+            position={post.pos}
+            rotation={[0, post.rotY, 0]}
+            castShadow
+            receiveShadow
+          >
+            <boxGeometry args={[0.13, 0.92, 0.13]} />
+            <meshStandardMaterial color="#23262e" roughness={0.5} metalness={0.62} />
           </mesh>
-          <mesh position={[0, 0.86, 0]}>
-            <cylinderGeometry args={[0.085, 0.085, 0.08, 10]} />
-            <meshStandardMaterial
-              color="#fed7aa"
-              emissive="#fb923c"
-              emissiveIntensity={1.4}
-              roughness={0.2}
-            />
-          </mesh>
-        </group>
-      ))}
+        ))}
+
+        {/* Warm golden sunset light bathing the overlook turnout & parked motorcycle */}
+        <pointLight
+          position={[OVERLOOK_CENTER.x + 2.5, OVERLOOK_CENTER.y + 3.2, OVERLOOK_CENTER.z - 4]}
+          color="#ffc272"
+          intensity={14}
+          distance={32}
+          decay={1.6}
+        />
+      </group>
 
       {/* Spatial Z-chunks of trees, contact shadows, boulders, and wind-swaying root clutter */}
       {foliageChunks.map((chunk, idx) => (

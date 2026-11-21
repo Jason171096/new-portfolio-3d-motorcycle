@@ -3,12 +3,14 @@ import { useGLTF } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { SUN_DIRECTION } from '../utils/roadSpline';
 
 export const WHEEL_RADIUS = 0.32;
 
 export interface MotorcycleTelemetry {
   position: THREE.Vector3;
   tangent: THREE.Vector3;
+  sunDirection: THREE.Vector3;
   leanAngle: number;
   pitchAngle: number;
   yawOffset: number;
@@ -648,6 +650,262 @@ const BEAM_FRAGMENT_SHADER = /* glsl */ `
 `;
 
 /**
+ * Augments a standard or physical PBR material via `onBeforeCompile` with subtle
+ * warm golden-hour sunset rim highlights facing the low sun ahead.
+ */
+function applyGoldenRimHighlight<T extends THREE.MeshStandardMaterial>(
+  mat: T,
+  sunDirUniform: { value: THREE.Vector3 },
+  rimStrength: number,
+  cacheTag: string,
+): T {
+  mat.customProgramCacheKey = () => `pulsar-golden-rim-${cacheTag}-${rimStrength}`;
+
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uSunDir = sunDirUniform;
+    shader.uniforms.uRimStrength = { value: rimStrength };
+
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+varying vec3 vRimWorldPos;
+varying vec3 vRimWorldNorm;`,
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+vec4 rimWPos = modelMatrix * vec4(transformed, 1.0);
+vRimWorldPos = rimWPos.xyz;
+vRimWorldNorm = normalize(mat3(modelMatrix) * objectNormal);`,
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+uniform vec3 uSunDir;
+uniform float uRimStrength;
+varying vec3 vRimWorldPos;
+varying vec3 vRimWorldNorm;`,
+      )
+      .replace(
+        '#include <opaque_fragment>',
+        `vec3 rimViewDir = normalize(cameraPosition - vRimWorldPos);
+vec3 rimNorm = normalize(vRimWorldNorm);
+float rimFresnel = pow(1.0 - max(dot(rimNorm, rimViewDir), 0.0), 2.7);
+float rimSunBack = pow(max(dot(-rimViewDir, normalize(uSunDir)), 0.0), 1.3);
+float rimSunBias = smoothstep(-0.35, 0.85, dot(rimNorm, normalize(uSunDir)) * 0.5 + 0.5);
+vec3 warmGoldenRim = vec3(1.0, 0.75, 0.36) * rimFresnel * (0.35 + 0.85 * rimSunBack) * rimSunBias * uRimStrength;
+outgoingLight += warmGoldenRim;
+#include <opaque_fragment>`,
+      );
+  };
+
+  return mat;
+}
+
+/**
+ * Stylized matte-black helmeted rider figure seated naturally on the Pulsar N250
+ * with warm golden rim highlights catching shoulders, arms, legs, and sport helmet.
+ */
+const StylizedRider = React.memo(function StylizedRider({
+  sunDirUniform,
+}: {
+  sunDirUniform: { value: THREE.Vector3 };
+}) {
+  const riderGeos = useMemo(() => {
+    const torsoCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0, 0.84, -0.21),
+      new THREE.Vector3(0, 1.04, -0.115),
+      new THREE.Vector3(0, 1.24, 0.01),
+    ]);
+    const torsoGeo = buildTaperedTube(torsoCurve, 22, 16, (u) => {
+      const mid = Math.sin(u * Math.PI);
+      return THREE.MathUtils.lerp(0.105, 0.118, u) + mid * 0.022;
+    });
+
+    const armCurveLeft = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0.172, 1.215, 0.012),
+      new THREE.Vector3(0.252, 1.038, 0.165),
+      new THREE.Vector3(0.285, 0.932, 0.335),
+      new THREE.Vector3(0.292, 0.922, 0.386),
+    ]);
+    const armGeoLeft = buildTaperedTube(armCurveLeft, 24, 12, (u) =>
+      THREE.MathUtils.lerp(0.056, 0.029, smoothstep(0.0, 1.0, u)),
+    );
+
+    const armCurveRight = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-0.172, 1.215, 0.012),
+      new THREE.Vector3(-0.252, 1.038, 0.165),
+      new THREE.Vector3(-0.285, 0.932, 0.335),
+      new THREE.Vector3(-0.292, 0.922, 0.386),
+    ]);
+    const armGeoRight = buildTaperedTube(armCurveRight, 24, 12, (u) =>
+      THREE.MathUtils.lerp(0.056, 0.029, smoothstep(0.0, 1.0, u)),
+    );
+
+    const legCurveLeft = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0.102, 0.835, -0.21),
+      new THREE.Vector3(0.175, 0.72, -0.045),
+      new THREE.Vector3(0.188, 0.60, 0.028),
+      new THREE.Vector3(0.188, 0.44, -0.072),
+      new THREE.Vector3(0.192, 0.32, -0.136),
+    ]);
+    const legGeoLeft = buildTaperedTube(legCurveLeft, 26, 12, (u) => {
+      if (u < 0.45) return THREE.MathUtils.lerp(0.074, 0.054, u / 0.45);
+      return THREE.MathUtils.lerp(0.054, 0.036, (u - 0.45) / 0.55);
+    });
+
+    const legCurveRight = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-0.102, 0.835, -0.21),
+      new THREE.Vector3(-0.175, 0.72, -0.045),
+      new THREE.Vector3(-0.188, 0.60, 0.028),
+      new THREE.Vector3(-0.188, 0.44, -0.072),
+      new THREE.Vector3(-0.192, 0.32, -0.136),
+    ]);
+    const legGeoRight = buildTaperedTube(legCurveRight, 26, 12, (u) => {
+      if (u < 0.45) return THREE.MathUtils.lerp(0.074, 0.054, u / 0.45);
+      return THREE.MathUtils.lerp(0.054, 0.036, (u - 0.45) / 0.55);
+    });
+
+    return { torsoGeo, armGeoLeft, armGeoRight, legGeoLeft, legGeoRight };
+  }, []);
+
+  const materials = useMemo(() => {
+    const jacketMat = applyGoldenRimHighlight(
+      new THREE.MeshStandardMaterial({
+        color: '#15171c',
+        roughness: 0.76,
+        metalness: 0.1,
+      }),
+      sunDirUniform,
+      0.62,
+      'rider-jacket',
+    );
+    const pantsMat = applyGoldenRimHighlight(
+      new THREE.MeshStandardMaterial({
+        color: '#121418',
+        roughness: 0.84,
+        metalness: 0.06,
+      }),
+      sunDirUniform,
+      0.48,
+      'rider-pants',
+    );
+    const helmetMat = applyGoldenRimHighlight(
+      new THREE.MeshStandardMaterial({
+        color: '#17191f',
+        roughness: 0.44,
+        metalness: 0.2,
+      }),
+      sunDirUniform,
+      0.82,
+      'rider-helmet',
+    );
+    const visorMat = new THREE.MeshPhysicalMaterial({
+      color: '#07090d',
+      roughness: 0.08,
+      metalness: 0.25,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.06,
+    });
+    return { jacketMat, pantsMat, helmetMat, visorMat };
+  }, [sunDirUniform]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(riderGeos).forEach((g) => g.dispose());
+      Object.values(materials).forEach((m) => m.dispose());
+    };
+  }, [materials, riderGeos]);
+
+  return (
+    <group name="stylized-rider">
+      {/* Seated pelvis */}
+      <mesh position={[0, 0.835, -0.215]} scale={[1.28, 0.85, 1.05]} material={materials.pantsMat} castShadow>
+        <sphereGeometry args={[0.105, 18, 14]} />
+      </mesh>
+
+      {/* Athletic forward-leaning riding jacket torso */}
+      <mesh geometry={riderGeos.torsoGeo} scale={[1.34, 1.0, 0.9]} material={materials.jacketMat} castShadow />
+
+      {/* Shoulder caps & subtle spine armor contour */}
+      {([1, -1] as const).map((side) => (
+        <mesh
+          key={`shoulder-${side}`}
+          position={[side * 0.162, 1.222, 0.012]}
+          scale={[1.08, 0.92, 0.98]}
+          material={materials.jacketMat}
+          castShadow
+        >
+          <sphereGeometry args={[0.064, 16, 12]} />
+        </mesh>
+      ))}
+      <mesh position={[0, 1.09, -0.145]} rotation={[0.42, 0, 0]} material={materials.jacketMat} castShadow>
+        <boxGeometry args={[0.11, 0.28, 0.045]} />
+      </mesh>
+
+      {/* Jacket collar & neck */}
+      <mesh position={[0, 1.285, 0.032]} rotation={[0.35, 0, 0]} material={materials.jacketMat} castShadow>
+        <cylinderGeometry args={[0.068, 0.082, 0.055, 14]} />
+      </mesh>
+      <mesh position={[0, 1.328, 0.048]} rotation={[0.25, 0, 0]} material={materials.pantsMat} castShadow>
+        <cylinderGeometry args={[0.046, 0.052, 0.085, 12]} />
+      </mesh>
+
+      {/* Matte-black full-face sport motorcycle helmet */}
+      <group position={[0, 1.442, 0.068]} rotation={[0.16, 0, 0]}>
+        <mesh scale={[0.96, 1.03, 1.18]} material={materials.helmetMat} castShadow>
+          <sphereGeometry args={[0.118, 24, 18]} />
+        </mesh>
+        {/* Sculpted chin guard */}
+        <mesh position={[0, -0.046, 0.072]} rotation={[0.28, 0, 0]} material={materials.helmetMat} castShadow>
+          <boxGeometry args={[0.148, 0.072, 0.105]} />
+        </mesh>
+        {/* Smoked curved visor */}
+        <mesh position={[0, 0.004, 0.035]} scale={[0.98, 0.95, 1.0]} material={materials.visorMat}>
+          <cylinderGeometry args={[0.118, 0.116, 0.074, 22, 1, false, -Math.PI * 0.34, Math.PI * 0.68]} />
+        </mesh>
+        {/* Rear aerodynamic helmet spoiler lip */}
+        <mesh position={[0, 0.036, -0.125]} rotation={[-0.3, 0, 0]} material={materials.helmetMat} castShadow>
+          <boxGeometry args={[0.13, 0.026, 0.048]} />
+        </mesh>
+      </group>
+
+      {/* Arms & gloved hands gripping the handlebars */}
+      <mesh geometry={riderGeos.armGeoLeft} material={materials.jacketMat} castShadow />
+      <mesh geometry={riderGeos.armGeoRight} material={materials.jacketMat} castShadow />
+      {([1, -1] as const).map((side) => (
+        <mesh
+          key={`glove-${side}`}
+          position={[side * 0.292, 0.922, 0.386]}
+          rotation={[0.04, side * 0.18, Math.PI / 2 - side * 0.07]}
+          material={materials.helmetMat}
+          castShadow
+        >
+          <cylinderGeometry args={[0.027, 0.027, 0.095, 12]} />
+        </mesh>
+      ))}
+
+      {/* Legs & riding boots planted on footpegs */}
+      <mesh geometry={riderGeos.legGeoLeft} material={materials.pantsMat} castShadow />
+      <mesh geometry={riderGeos.legGeoRight} material={materials.pantsMat} castShadow />
+      {([1, -1] as const).map((side) => (
+        <group key={`boot-${side}`} position={[side * 0.195, 0.305, -0.105]} rotation={[0.08, 0, 0]}>
+          <mesh material={materials.helmetMat} castShadow>
+            <boxGeometry args={[0.076, 0.056, 0.165]} />
+          </mesh>
+          <mesh position={[0, -0.006, 0.082]} scale={[1.0, 0.72, 1.1]} material={materials.helmetMat} castShadow>
+            <sphereGeometry args={[0.038, 12, 10]} />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  );
+});
+
+/**
  * Procedural Bajaj Pulsar N250 naked streetfighter geometry constructed with
  * beveled ExtrudeGeometry, LatheGeometry, tapered TubeGeometry, and smooth vertex normals.
  */
@@ -655,12 +913,14 @@ const ProceduralPulsarN250 = React.memo(function ProceduralPulsarN250({
   frontWheelRef,
   rearWheelRef,
   tailGlowRef,
+  sunDirUniform,
   headlightTarget,
   telemetryRef,
 }: {
   frontWheelRef: React.MutableRefObject<THREE.Group | null>;
   rearWheelRef: React.MutableRefObject<THREE.Group | null>;
   tailGlowRef: React.MutableRefObject<THREE.MeshStandardMaterial | null>;
+  sunDirUniform: { value: THREE.Vector3 };
   headlightTarget: THREE.Object3D;
   telemetryRef: React.MutableRefObject<MotorcycleTelemetry>;
 }) {
@@ -675,12 +935,29 @@ const ProceduralPulsarN250 = React.memo(function ProceduralPulsarN250({
   const tailGlowMaterial = useMemo(
     () =>
       new THREE.MeshStandardMaterial({
-        color: '#ff2e2e',
-        emissive: '#ef4444',
-        emissiveIntensity: 2.2,
-        roughness: 0.18,
+        color: '#ff2424',
+        emissive: '#ff1f1f',
+        emissiveIntensity: 3.0,
+        roughness: 0.16,
       }),
     [],
+  );
+
+  const charcoalPaintMaterial = useMemo(
+    () =>
+      applyGoldenRimHighlight(
+        new THREE.MeshPhysicalMaterial({
+          color: '#232834',
+          metalness: 0.76,
+          roughness: 0.24,
+          clearcoat: 0.82,
+          clearcoatRoughness: 0.14,
+        }),
+        sunDirUniform,
+        0.46,
+        'charcoal-body',
+      ),
+    [sunDirUniform],
   );
 
   useEffect(() => {
@@ -688,8 +965,9 @@ const ProceduralPulsarN250 = React.memo(function ProceduralPulsarN250({
     return () => {
       tailGlowRef.current = null;
       tailGlowMaterial.dispose();
+      charcoalPaintMaterial.dispose();
     };
-  }, [tailGlowMaterial, tailGlowRef]);
+  }, [charcoalPaintMaterial, tailGlowMaterial, tailGlowRef]);
 
   const geos = useMemo(() => {
     // =========================================================================
@@ -1612,15 +1890,7 @@ const ProceduralPulsarN250 = React.memo(function ProceduralPulsarN250({
       {/* ===================================================================== */}
       {/* FUEL TANK & WIDE FORWARD-SWEPT ANGULAR SHROUDS                        */}
       {/* ===================================================================== */}
-      <mesh geometry={geos.fuelTank} castShadow receiveShadow>
-        <meshPhysicalMaterial
-          color="#232834"
-          metalness={0.76}
-          roughness={0.24}
-          clearcoat={0.82}
-          clearcoatRoughness={0.14}
-        />
-      </mesh>
+      <mesh geometry={geos.fuelTank} material={charcoalPaintMaterial} castShadow receiveShadow />
       <mesh geometry={geos.tankSpinePad} castShadow>
         <meshStandardMaterial color="#13161c" roughness={0.76} metalness={0.15} />
       </mesh>
@@ -1638,15 +1908,7 @@ const ProceduralPulsarN250 = React.memo(function ProceduralPulsarN250({
             position={[side * 0.162, 0.77, 0.27]}
             rotation={[0.04, side * -0.18, side * -0.11]}
           >
-            <mesh geometry={geos.tankShroud} castShadow receiveShadow>
-              <meshPhysicalMaterial
-                color="#262c38"
-                metalness={0.76}
-                roughness={0.24}
-                clearcoat={0.8}
-                clearcoatRoughness={0.15}
-              />
-            </mesh>
+            <mesh geometry={geos.tankShroud} material={charcoalPaintMaterial} castShadow receiveShadow />
             <mesh geometry={geos.shroudCrimsonTrim} position={[side * 0.024, 0, 0]}>
               <meshPhysicalMaterial
                 color="#dc2626"
@@ -1689,34 +1951,20 @@ const ProceduralPulsarN250 = React.memo(function ProceduralPulsarN250({
       {/* Sharp Upswept Side Tail Cowls + Undertray */}
       <mesh
         geometry={geos.tailCowl}
+        material={charcoalPaintMaterial}
         position={[0.172, 0, 0]}
         rotation={[0, 0.15, 0]}
         castShadow
         receiveShadow
-      >
-        <meshPhysicalMaterial
-          color="#232834"
-          metalness={0.76}
-          roughness={0.24}
-          clearcoat={0.8}
-          clearcoatRoughness={0.15}
-        />
-      </mesh>
+      />
       <mesh
         geometry={geos.tailCowl}
+        material={charcoalPaintMaterial}
         position={[-0.172, 0, 0]}
         rotation={[0, -0.15, 0]}
         castShadow
         receiveShadow
-      >
-        <meshPhysicalMaterial
-          color="#232834"
-          metalness={0.76}
-          roughness={0.24}
-          clearcoat={0.8}
-          clearcoatRoughness={0.15}
-        />
-      </mesh>
+      />
       <mesh
         geometry={geos.tailCrimsonTrim}
         position={[0.19, 0, 0]}
@@ -1765,16 +2013,17 @@ const ProceduralPulsarN250 = React.memo(function ProceduralPulsarN250({
       <mesh
         geometry={geos.boomerangLed}
         material={tailGlowMaterial}
-        position={[0, 0.892, -0.792]}
+        position={[0, 0.892, -0.793]}
         rotation={[-0.28, 0, 0]}
       />
       <mesh
         geometry={geos.boomerangLed}
         material={tailGlowMaterial}
-        position={[0, 0.892, -0.792]}
+        position={[0, 0.892, -0.793]}
         rotation={[-0.28, 0, 0]}
         scale={[-1, 1, 1]}
       />
+      <pointLight position={[0, 0.86, -0.89]} color="#ff2b2b" intensity={1.4} distance={2.1} decay={2} />
 
       {/* Rear License-Plate Fender Bracket, Reflector & Amber Turn Stalks */}
       <mesh geometry={geos.fenderBracketArm} castShadow>
@@ -1849,15 +2098,7 @@ const ProceduralPulsarN250 = React.memo(function ProceduralPulsarN250({
         </mesh>
 
         {/* Contoured Curved Front Fender */}
-        <mesh geometry={geos.frontFender} castShadow receiveShadow>
-          <meshPhysicalMaterial
-            color="#222732"
-            metalness={0.76}
-            roughness={0.24}
-            clearcoat={0.8}
-            clearcoatRoughness={0.15}
-          />
-        </mesh>
+        <mesh geometry={geos.frontFender} material={charcoalPaintMaterial} castShadow receiveShadow />
 
         {/* Streetfighter Cockpit: Tapered Handlebars, Digital Cluster & TubeGeometry Mirrors */}
         <group position={[0, 0.062, -0.008]} rotation={[0.42, 0, 0]}>
@@ -1950,15 +2191,7 @@ const ProceduralPulsarN250 = React.memo(function ProceduralPulsarN250({
 
         {/* Compact Wolf-Eyed Bi-Functional Projector Headlamp Cowl & Smoked Flyscreen Visor */}
         <group position={[0, -0.055, 0.125]} rotation={[0.42, 0, 0]}>
-          <mesh geometry={geos.headCowl} castShadow>
-            <meshPhysicalMaterial
-              color="#212632"
-              metalness={0.76}
-              roughness={0.24}
-              clearcoat={0.82}
-              clearcoatRoughness={0.14}
-            />
-          </mesh>
+          <mesh geometry={geos.headCowl} material={charcoalPaintMaterial} castShadow />
 
           {/* Recessed Dark Projector Bezel */}
           <mesh position={[0, -0.012, 0.108]} rotation={[Math.PI / 2, 0, 0]}>
@@ -2041,6 +2274,9 @@ const ProceduralPulsarN250 = React.memo(function ProceduralPulsarN250({
           />
         </group>
       </group>
+
+      {/* Stylized Matte-Black Helmeted Rider */}
+      <StylizedRider sunDirUniform={sunDirUniform} />
     </group>
   );
 });
@@ -2055,6 +2291,7 @@ export const Motorcycle = React.memo(function Motorcycle({
   const frontWheelRef = useRef<THREE.Group | null>(null);
   const rearWheelRef = useRef<THREE.Group | null>(null);
   const tailGlowRef = useRef<THREE.MeshStandardMaterial | null>(null);
+  const sunDirUniform = useMemo(() => ({ value: SUN_DIRECTION.clone() }), []);
 
   const wheelAngleRef = useRef(0);
   const headlightTarget = useMemo(() => {
@@ -2072,6 +2309,8 @@ export const Motorcycle = React.memo(function Motorcycle({
   useFrame(({ clock }) => {
     const tState = telemetryRef.current;
     if (!bikeGroupRef.current || !leanGroupRef.current) return;
+
+    sunDirUniform.value.copy(tState.sunDirection);
 
     // 1. Align bike root to highway spline tangent & world position
     bikeGroupRef.current.position.copy(tState.position);
@@ -2108,9 +2347,9 @@ export const Motorcycle = React.memo(function Motorcycle({
       rearWheelRef.current.rotation.x = wheelAngleRef.current;
     }
 
-    // 4. Brighten LED brake/tail light when decelerating into the Overlook
+    // 4. Brighten LED brake/tail light when decelerating or stopped at the Overlook
     if (tailGlowRef.current) {
-      tailGlowRef.current.emissiveIntensity = tState.isBraking ? 4.8 : 2.2;
+      tailGlowRef.current.emissiveIntensity = tState.isBraking ? 5.6 : 2.8;
     }
   });
 
@@ -2119,6 +2358,7 @@ export const Motorcycle = React.memo(function Motorcycle({
       frontWheelRef={frontWheelRef}
       rearWheelRef={rearWheelRef}
       tailGlowRef={tailGlowRef}
+      sunDirUniform={sunDirUniform}
       headlightTarget={headlightTarget}
       telemetryRef={telemetryRef}
     />

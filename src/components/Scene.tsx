@@ -83,10 +83,16 @@ const RigAndWorld = React.memo(function RigAndWorld({
   const sunTarget = useMemo(() => new THREE.Object3D(), []);
 
   const initialFrame = useMemo(() => getRoadFrameAt(scrollProgressToBikeT(0)), []);
+  const overlookSunDir = useMemo(() => {
+    const endFwd = getRoadFrameAt(1.0).tangent.clone().setY(0).normalize();
+    return new THREE.Vector3(endFwd.x, 0.092, endFwd.z).normalize();
+  }, []);
+  const blendedSunDir = useMemo(() => new THREE.Vector3().copy(SUN_DIRECTION), []);
 
   const telemetryRef = useRef<MotorcycleTelemetry>({
     position: initialFrame.point.clone(),
     tangent: initialFrame.tangent.clone(),
+    sunDirection: SUN_DIRECTION.clone(),
     leanAngle: 0,
     pitchAngle: 0,
     yawOffset: 0,
@@ -166,8 +172,8 @@ const RigAndWorld = React.memo(function RigAndWorld({
         );
     leanRef.current = THREE.MathUtils.damp(leanRef.current, targetLean, 9.0, dt);
 
-    // Braking dive when decelerating onto the Destination Overlook (91%..99%)
-    const isOverlookBraking = p > 0.91 && p < 0.988 && Math.abs(progressDelta) > 0.00008;
+    // Braking dive when decelerating onto the Destination Overlook (91%..98.5%)
+    const isOverlookBraking = p > 0.91 && p < 0.985 && Math.abs(progressDelta) > 0.00006;
     const targetPitch = reducedMotion
       ? 0
       : isOverlookBraking
@@ -175,23 +181,27 @@ const RigAndWorld = React.memo(function RigAndWorld({
         : -THREE.MathUtils.clamp(progressDelta * 18, -0.025, 0.04);
     pitchRef.current = THREE.MathUtils.damp(pitchRef.current, targetPitch, 8.0, dt);
 
-    // Slight scenic pull-off angle as motorcycle stops at the Overlook vista
-    const overlookParkFactor = smoothstep(0.925, 0.99, p);
-    const yawOffset = overlookParkFactor * -0.28;
+    // Smoothly pull toward the right overlook edge & angle slightly right for a dynamic rear 3/4 view
+    const overlookParkFactor = smoothstep(0.92, 0.992, p);
+    const yawOffset = overlookParkFactor * -0.21;
 
-    // Place motorcycle neatly in right-center lane, pulling onto overlook right-center pad at summit
-    const laneShift = THREE.MathUtils.lerp(0.65, 1.15, overlookParkFactor);
+    // Place motorcycle neatly in right lane, pulling onto the overlook turnout edge at 92%–100%
+    const laneShift = THREE.MathUtils.lerp(0.65, 1.7, overlookParkFactor);
     const bikePos = bikePosScratch.copy(frame.point).addScaledVector(frame.right, laneShift);
+
+    // Smoothly align key sun direction toward the Overlook sunset saddle
+    blendedSunDir.copy(SUN_DIRECTION).lerp(overlookSunDir, overlookParkFactor).normalize();
 
     const tState = telemetryRef.current;
     tState.position.copy(bikePos);
     tState.tangent.copy(frame.tangent);
+    tState.sunDirection.copy(blendedSunDir);
     tState.leanAngle = leanRef.current;
     tState.pitchAngle = pitchRef.current;
     tState.yawOffset = yawOffset;
     tState.deltaDistance = deltaDistance;
     tState.speedNormalized = THREE.MathUtils.clamp(velocityRef.current / 42, 0, 1);
-    tState.isBraking = isOverlookBraking || p >= 0.985;
+    tState.isBraking = isOverlookBraking || p >= 0.92;
 
     // 4. Keep directional sunset shadow frustum centered around the motorcycle
     if (sunLightRef.current) {
@@ -199,7 +209,7 @@ const RigAndWorld = React.memo(function RigAndWorld({
       sunTarget.updateMatrixWorld();
       sunLightRef.current.position
         .copy(bikePos)
-        .addScaledVector(SUN_DIRECTION, 52);
+        .addScaledVector(blendedSunDir, 52);
     }
 
     // 5. Responsive camera framing & dynamic waypoint bias (damped in local bike coordinates)
@@ -226,7 +236,7 @@ const RigAndWorld = React.memo(function RigAndWorld({
 
     for (const wp of PORTFOLIO_WAYPOINTS) {
       const w = getWaypointWeight(p, wp);
-      if (w > 0.001) {
+      if (w > 0.001 && wp.kind !== 'overlook') {
         const lateralScale = isMobile ? 0.52 : 1.0;
         // Subtly bias chase camera lateral offset toward the active billboard side when approaching a milestone
         const billboardApproachBias =
@@ -261,13 +271,31 @@ const RigAndWorld = React.memo(function RigAndWorld({
       ? 0
       : Math.sin(clock.elapsedTime * 0.9) * 0.05 * (1 - overlookParkFactor);
 
-    const goalCamRight = rawChaseRight + threeQuarterChaseOffset + swayX;
-    const goalCamUp = baseUp + biasUp;
-    const goalCamBack = baseBack + biasBack;
+    // Overlook composition: camera behind & slightly left of bike so bike rests lower-right,
+    // glowing sunset aligns down the road center, and left viewport stays clear for Contact HUD
+    const overlookCamBlend = smoothstep(0.895, 0.985, p);
+    const overlookCamRight = isMobile ? -0.85 : -1.76;
+    const overlookCamUp = isMobile ? 2.65 : 2.28;
+    const overlookCamBack = isMobile ? 6.85 : 5.45;
+    const overlookLookRight = isMobile ? -0.65 : -1.7;
+    const overlookLookUp = isMobile ? 0.95 : 1.28;
+    const overlookLookForward = isMobile ? 10.0 : 11.2;
 
-    const goalLookRight = lookRight;
-    const goalLookUp = 1.05 + lookUp;
-    const goalLookForward = 6.4 + lookForward;
+    const goalCamRight = THREE.MathUtils.lerp(
+      rawChaseRight + threeQuarterChaseOffset + swayX,
+      overlookCamRight,
+      overlookCamBlend,
+    );
+    const goalCamUp = THREE.MathUtils.lerp(baseUp + biasUp, overlookCamUp, overlookCamBlend);
+    const goalCamBack = THREE.MathUtils.lerp(baseBack + biasBack, overlookCamBack, overlookCamBlend);
+
+    const goalLookRight = THREE.MathUtils.lerp(lookRight, overlookLookRight, overlookCamBlend);
+    const goalLookUp = THREE.MathUtils.lerp(1.05 + lookUp, overlookLookUp, overlookCamBlend);
+    const goalLookForward = THREE.MathUtils.lerp(
+      6.4 + lookForward,
+      overlookLookForward,
+      overlookCamBlend,
+    );
 
     if (!initializedCamRef.current) {
       dampedCamLocalRef.current.right = goalCamRight;
@@ -369,11 +397,11 @@ const RigAndWorld = React.memo(function RigAndWorld({
 
   return (
     <>
-      <fogExp2 attach="fog" args={['#de9f73', 0.0046]} />
+      <fogExp2 attach="fog" args={['#f0b868', 0.00175]} />
 
       {/* Warm golden-hour ambient + hemisphere sky/earth bounce */}
-      <ambientLight intensity={0.32} color="#ffd7b0" />
-      <hemisphereLight args={['#ffbc82', '#313a29', 0.95]} />
+      <ambientLight intensity={0.38} color="#ffdba8" />
+      <hemisphereLight args={['#ffca7e', '#4b3621', 1.05]} />
 
       {/* Primary sunset directional light following the motorcycle for crisp local shadows */}
       <primitive object={sunTarget} />
@@ -385,8 +413,8 @@ const RigAndWorld = React.memo(function RigAndWorld({
           initialFrame.point.y + SUN_DIRECTION.y * 52,
           initialFrame.point.z + SUN_DIRECTION.z * 52,
         ]}
-        intensity={2.45}
-        color="#ffbe78"
+        intensity={2.6}
+        color="#ffbe6b"
         castShadow
         shadow-mapSize={[1024, 1024]}
         shadow-camera-near={5}
@@ -398,8 +426,8 @@ const RigAndWorld = React.memo(function RigAndWorld({
         shadow-bias={-0.0005}
       />
 
-      {/* Subtle cool twilight fill light from behind camera */}
-      <directionalLight position={[18, 14, 30]} intensity={0.42} color="#8ba6d9" />
+      {/* Subtle warm-neutral fill light from behind camera */}
+      <directionalLight position={[18, 14, 30]} intensity={0.36} color="#bba392" />
 
       <RoadAndTerrain />
       <ProjectWaypoints progressRef={smoothedProgressRef} reducedMotion={reducedMotion} />

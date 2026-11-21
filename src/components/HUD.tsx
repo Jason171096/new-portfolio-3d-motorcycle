@@ -366,7 +366,7 @@ export function HUD({ telemetry, onNavigate, reducedMotion }: HUDProps) {
           {isOverlook && activeWaypoint && (
             <section
               aria-label="Contact and links"
-              className="pointer-events-auto glass-panel max-w-lg rounded-3xl p-6 sm:p-7"
+              className="pointer-events-auto glass-panel max-h-[68vh] w-full max-w-md overflow-y-auto rounded-3xl p-5 sm:max-h-none sm:p-6"
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="inline-flex items-center gap-2 rounded-full border border-amber-300/30 bg-amber-400/15 px-3 py-1 font-mono text-[11px] uppercase tracking-widest text-amber-200">
