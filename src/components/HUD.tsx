@@ -52,6 +52,13 @@ export function HUD({ telemetry, onNavigate, reducedMotion }: HUDProps) {
   const isProject = activeWaypoint?.kind === 'project';
   const isOverlook = activeWaypoint?.kind === 'overlook';
   const firstProjectWaypoint = PORTFOLIO_WAYPOINTS.find((w) => w.kind === 'project');
+  const activeWaypointIndex = activeWaypoint
+    ? PORTFOLIO_WAYPOINTS.findIndex((wp) => wp.id === activeWaypoint.id)
+    : -1;
+  const nextWaypoint =
+    activeWaypointIndex >= 0 && activeWaypointIndex < PORTFOLIO_WAYPOINTS.length - 1
+      ? PORTFOLIO_WAYPOINTS[activeWaypointIndex + 1]
+      : null;
 
   const resolvedProjectPreviewSrc = useMemo(() => {
     if (!activeWaypoint || activeWaypoint.kind !== 'project') return null;
@@ -282,7 +289,7 @@ export function HUD({ telemetry, onNavigate, reducedMotion }: HUDProps) {
 
               <div
                 className={`${
-                  mobileExpanded ? 'mt-3 block max-h-[34vh] overflow-y-auto pr-1' : 'hidden'
+                  mobileExpanded ? 'mt-3 block max-h-[28vh] overflow-y-auto pr-1' : 'hidden'
                 } lg:mt-3 lg:block lg:max-h-none`}
               >
                 {/* Clickable screenshot preview thumbnail (with procedural fallback if WebP is absent) */}
@@ -323,24 +330,35 @@ export function HUD({ telemetry, onNavigate, reducedMotion }: HUDProps) {
                     </li>
                   ))}
                 </ul>
-
-                {activeWaypoint.links && activeWaypoint.links.length > 0 && (
-                  <div className="mt-3.5 flex flex-wrap gap-2 border-t border-white/10 pt-3">
-                    {activeWaypoint.links.map((link) => (
-                      <a
-                        key={link.label}
-                        href={link.url}
-                        target={link.external ? '_blank' : undefined}
-                        rel={link.external ? 'noreferrer' : undefined}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300/25 bg-amber-300/10 px-3 py-1.5 font-mono text-[11px] font-medium text-amber-200 transition-colors hover:bg-amber-300/20"
-                      >
-                        <span>{link.label}</span>
-                        <ExternalLink className="h-3 w-3" />
-                      </a>
-                    ))}
-                  </div>
-                )}
               </div>
+
+              {(activeWaypoint.websiteUrl || nextWaypoint) && (
+                <div className="pointer-events-auto mt-3.5 flex flex-wrap items-center gap-2 border-t border-white/10 pt-3">
+                  {activeWaypoint.websiteUrl && (
+                    <a
+                      href={activeWaypoint.websiteUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-amber-300/40 bg-amber-300/15 px-3.5 py-2 font-mono text-[11px] font-semibold text-amber-200 shadow-sm shadow-amber-500/10 transition-all hover:border-amber-300/65 hover:bg-amber-300/25 hover:text-amber-100"
+                    >
+                      <span>Visit Website</span>
+                      <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-85" />
+                    </a>
+                  )}
+
+                  {nextWaypoint && (
+                    <button
+                      type="button"
+                      onClick={() => onNavigate(nextWaypoint.jumpProgress)}
+                      title={`Advance to ${nextWaypoint.mileNumber}: ${nextWaypoint.navLabel}`}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/15 bg-white/5 px-3.5 py-2 font-mono text-[11px] font-medium text-stone-200 transition-all hover:border-amber-300/35 hover:bg-white/10 hover:text-white"
+                    >
+                      <span>Next Mile</span>
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-amber-300/90" />
+                    </button>
+                  )}
+                </div>
+              )}
             </aside>
           )}
 

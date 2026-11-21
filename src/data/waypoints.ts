@@ -1,11 +1,5 @@
 export type WaypointKind = 'intro' | 'project' | 'overlook';
 
-export interface ProjectLink {
-  label: string;
-  url: string;
-  external?: boolean;
-}
-
 export interface CameraBias {
   /** Additional local camera offset relative to bike frame [right, up, back] */
   offset: [number, number, number];
@@ -42,7 +36,8 @@ export interface WaypointConfig {
   imagePath?: string;
   /** Accent hex color used for 3D glassmorphic bezel and HUD highlight */
   accentColor: string;
-  links?: ProjectLink[];
+  /** Live project website URL opened from the milestone detail card */
+  websiteUrl?: string;
 }
 
 export interface ContactDestination {
@@ -121,10 +116,7 @@ export const PORTFOLIO_WAYPOINTS: WaypointConfig[] = [
     ],
     imagePath: '/assets/projects/primefitness.webp',
     accentColor: '#38bdf8',
-    links: [
-      { label: 'Architecture Case Study', url: 'https://jasonmartinez.dev/#primefitness', external: true },
-      { label: 'GitHub', url: 'https://github.com/jasonmartinez', external: true },
-    ],
+    websiteUrl: 'https://primefitnessmvp.netlify.app',
   },
   {
     id: 'azzule-ai',
@@ -152,11 +144,9 @@ export const PORTFOLIO_WAYPOINTS: WaypointConfig[] = [
       'Deterministic SQL compliance validation rules paired with AI confidence scoring',
       'Audit-ready lineage tracking across global agricultural supply-chain entities',
     ],
-    imagePath: '/assets/projects/azzule-ai.webp',
+    imagePath: '/assets/projects/azzule.webp',
     accentColor: '#34d399',
-    links: [
-      { label: 'Workflow Overview', url: 'https://jasonmartinez.dev/#azzule-ai', external: true },
-    ],
+    websiteUrl: 'https://azzule.com/',
   },
   {
     id: 'vw-credit',
@@ -184,11 +174,9 @@ export const PORTFOLIO_WAYPOINTS: WaypointConfig[] = [
       'Automated underwriting decision rules cutting dealer credit approval latency',
       'Fault-tolerant Azure cloud deployment with strict audit logging and SLA monitoring',
     ],
-    imagePath: '/assets/projects/vw-credit.webp',
+    imagePath: '/assets/projects/vwfs.webp',
     accentColor: '#60a5fa',
-    links: [
-      { label: 'Architecture Notes', url: 'https://jasonmartinez.dev/#vw-credit', external: true },
-    ],
+    websiteUrl: 'https://www.vwfs.mx/',
   },
   {
     id: 'ohhfiles',
@@ -218,9 +206,7 @@ export const PORTFOLIO_WAYPOINTS: WaypointConfig[] = [
     ],
     imagePath: '/assets/projects/ohhfiles.webp',
     accentColor: '#a78bfa',
-    links: [
-      { label: 'Platform Overview', url: 'https://jasonmartinez.dev/#ohhfiles', external: true },
-    ],
+    websiteUrl: 'https://app.ohhfiles.com/Identity/Account/Login?ReturnUrl=%2F',
   },
   {
     id: 'mediger',
@@ -250,9 +236,7 @@ export const PORTFOLIO_WAYPOINTS: WaypointConfig[] = [
     ],
     imagePath: '/assets/projects/mediger.webp',
     accentColor: '#fb923c',
-    links: [
-      { label: 'System Overview', url: 'https://jasonmartinez.dev/#mediger', external: true },
-    ],
+    websiteUrl: 'https://mediger.mx/',
   },
   {
     id: 'overlook',
@@ -280,8 +264,18 @@ export const PORTFOLIO_WAYPOINTS: WaypointConfig[] = [
 ];
 
 export const PROJECT_WAYPOINTS = PORTFOLIO_WAYPOINTS.filter(
-  (w): w is WaypointConfig & { kind: 'project'; anchorT: number; imagePath: string } =>
-    w.kind === 'project' && typeof w.anchorT === 'number' && typeof w.imagePath === 'string',
+  (
+    w,
+  ): w is WaypointConfig & {
+    kind: 'project';
+    anchorT: number;
+    imagePath: string;
+    websiteUrl: string;
+  } =>
+    w.kind === 'project' &&
+    typeof w.anchorT === 'number' &&
+    typeof w.imagePath === 'string' &&
+    typeof w.websiteUrl === 'string',
 );
 
 /** Total route distance in thematic miles, dynamically synced with the project milestones + summit pull-off */
