@@ -52,9 +52,9 @@ export interface ContactDestination {
 export const CONTACT_INFO: ContactDestination = {
   domain: 'jasonmartinez.dev',
   email: 'hello@jasonmartinez.dev',
-  github: 'https://github.com/jasonmartinez',
-  linkedin: 'https://linkedin.com/in/jasonmartinez',
-  location: 'California, USA',
+  github: 'https://github.com/Jason171096',
+  linkedin: 'https://linkedin.com/in/jm-jason-martinez',
+  location: 'Mexico City, Mexico',
   availability: 'Open to Senior Backend, Cloud & AI Systems roles',
 };
 
